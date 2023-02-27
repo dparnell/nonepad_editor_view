@@ -1,0 +1,1169 @@
+use std::ops::{Deref, DerefMut, Range};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::sync::mpsc::Sender;
+use std::thread;
+use std::time::Duration;
+use druid::kurbo::{BezPath, Line, PathEl};
+use druid::piet::{PietText, Text, TextAttribute, TextLayout, TextLayoutBuilder};
+use druid::{Affine, BoxConstraints, Color, Data, Env, Event, EventCtx, FontStyle, KeyEvent, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, Point, Rect, RenderContext, Size, UpdateCtx, Widget, WidgetId};
+use ropey::Rope;
+use syntect::parsing::SyntaxReference;
+use crate::text_buffer::{EditStack, position, rope_utils, SelectionLineRange};
+use crate::text_buffer::syntax::{StateCache, StyledLinesCache, SYNTAXSET};
+use crate::text_editor::{EDITOR_LEFT_PADDING, env, FILE_REMOVED, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, RELOAD_FROM_DISK, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, SET_EDITOR_EVENT_HANDLER};
+
+#[derive(Debug, Default)]
+struct SelectionPath {
+    elem: Vec<PathEl>,
+    last_range: Option<SelectionLineRange>,
+    last_x: f64,
+}
+
+impl Deref for SelectionPath {
+    type Target = Vec<PathEl>;
+    fn deref(&self) -> &Self::Target {
+        &self.elem
+    }
+}
+
+impl DerefMut for SelectionPath {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.elem
+    }
+}
+
+impl SelectionPath {
+    fn new() -> Self {
+        Self {
+            elem: Vec::new(),
+            last_range: None,
+            last_x: 0.5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CommonMetrics {
+    pub(crate) font_advance: f64,
+    font_baseline: f64,
+    font_descent: f64,
+    pub(crate) font_height: f64,
+
+    pub(crate) font_size: f64,
+
+    page_len: u64,
+}
+
+impl CommonMetrics {
+    pub fn new(text_ctx: &mut PietText, font_name: &str, size: Size) -> Self {
+        let mut metrics = CommonMetrics::default();
+        let font = text_ctx.font_family(font_name).unwrap();
+        let layout = text_ctx
+            .new_text_layout("8")
+            .default_attribute(TextAttribute::Weight(FONT_WEIGTH))
+            .font(font, metrics.font_size)
+            .build()
+            .unwrap();
+        metrics.font_advance = layout.size().width;
+        metrics.font_baseline = layout.line_metric(0).unwrap().baseline;
+        metrics.font_height = layout.line_metric(0).unwrap().height;
+        metrics.font_descent = metrics.font_height - metrics.font_baseline;
+        metrics.page_len = (size.height / metrics.font_height).round() as u64;
+        metrics
+    }
+
+    pub fn from_env(env: &Env) -> Self {
+        CommonMetrics {
+            font_baseline: env.get(env::FONT_BASELINE),
+            font_advance: env.get(env::FONT_ADVANCE),
+            font_descent: env.get(env::FONT_DESCENT),
+            font_height: env.get(env::FONT_HEIGHT),
+            font_size: env.get(env::FONT_SIZE),
+            page_len: env.get(env::PAGE_LEN),
+        }
+    }
+
+    pub fn to_env(self, env: &mut Env) {
+        env.set(env::FONT_BASELINE, self.font_baseline);
+        env.set(env::FONT_ADVANCE, self.font_advance);
+        env.set(env::FONT_DESCENT, self.font_descent);
+        env.set(env::FONT_HEIGHT, self.font_height);
+        env.set(env::FONT_SIZE, self.font_size);
+        env.set(env::PAGE_LEN, self.page_len);
+    }
+}
+
+impl Default for CommonMetrics {
+    fn default() -> Self {
+        CommonMetrics {
+            font_advance: 0.0,
+            font_baseline: 0.0,
+            font_descent: 0.0,
+            font_height: 0.0,
+            font_size: FONT_SIZE,
+            page_len: 0,
+        }
+    }
+}
+#[derive(Debug, PartialEq, Eq)]
+enum HeldState {
+    None,
+    Grapheme,
+    Word,
+    Line,
+}
+
+impl HeldState {
+    fn is_held(&self) -> bool {
+        *self != HeldState::None
+    }
+}
+
+pub enum BackgroundWorkerMessage {
+    Stop,
+    UpdateBuffer(SyntaxReference, Rope, usize),
+    WatchFile(PathBuf),
+    UnwatchFile(PathBuf),
+}
+
+pub type EditorEventHandler = fn(&mut EventCtx, &Event, &mut EditorView, &mut EditStack) -> ();
+
+pub struct EditorView {
+    delta_y: f64,
+    delta_x: f64,
+    page_len: usize,
+    metrics: CommonMetrics,
+    font_name: String,
+
+    bg_color: Color,
+    fg_color: Color,
+    fg_sel_color: Color,
+    bg_sel_color: Color,
+
+    size: Size,
+    owner_id: WidgetId,
+
+    longest_line_len: f64,
+
+    held_state: HeldState,
+
+    bgworker_channel_tx: Option<Sender<BackgroundWorkerMessage>>,
+    highlighted_line: StyledLinesCache,
+
+    event_handler: Option<EditorEventHandler>
+}
+
+impl Widget<EditStack> for EditorView {
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event, editor: &mut EditStack, _env: &Env) {
+        let old_dx = self.delta_x;
+        let old_dy = self.delta_y;
+        let old_editor = editor.clone();
+
+        let handled = self.handle_event(event, ctx, editor);
+        if handled {
+            ctx.set_handled();
+        }
+        if !old_editor.buffer.same(&editor.buffer) {
+            self.put_caret_in_visible_range(ctx, editor);
+        }
+
+        #[allow(clippy::float_cmp)] // The equality will be true if we don't touch at all at self.delta_[xy]
+        if old_dx != self.delta_x || old_dy != self.delta_y {
+            ctx.request_paint();
+        }
+    }
+
+    fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle, editor: &EditStack, env: &Env) {
+        match event {
+            LifeCycle::WidgetAdded => {
+                let (tx, rx) = mpsc::channel();
+                self.bgworker_channel_tx = Some(tx);
+                let highlighted_line = self.highlighted_line.clone();
+                let owner_id = self.owner_id.clone();
+                let event_sink = ctx.get_external_handle();
+                thread::spawn(move || {
+                    let mut syntax = SYNTAXSET.find_syntax_plain_text();
+                    let mut highlight_cache = StateCache::new();
+                    let mut current_index = 0;
+                    let mut chunk_len = 100;
+                    let mut rope = Rope::new();
+                    let mut hotwatch = hotwatch::Hotwatch::new().unwrap(); // TODO, will crash the highlighter if hotwatch couldn't be initialized
+                    loop {
+                        match rx.try_recv() {
+                            Ok(message) => match message {
+                                BackgroundWorkerMessage::Stop => return,
+                                BackgroundWorkerMessage::UpdateBuffer(s, r, start) => {
+                                    rope = r;
+                                    current_index = start;
+                                    // The first chunk is smaller, to repaint quickly with highlight
+                                    chunk_len = 100;
+                                    syntax = SYNTAXSET.find_syntax_by_name(&s.name).unwrap();
+                                }
+                                BackgroundWorkerMessage::WatchFile(p) => {
+                                    let es = event_sink.clone();
+                                    let _ = hotwatch.watch(p, move |e| match e {
+                                        hotwatch::Event::Write(_) | hotwatch::Event::Create(_) => {
+                                            let _ = es.submit_command(RELOAD_FROM_DISK, (), owner_id);
+                                        }
+                                        hotwatch::Event::Remove(_) => {
+                                            let _ = es.submit_command(FILE_REMOVED, (), owner_id);
+                                        }
+                                        _ => {}
+                                    });
+                                }
+                                BackgroundWorkerMessage::UnwatchFile(p) => {
+                                    let _ = hotwatch.unwatch(p);
+                                }
+                            },
+                            _ => (),
+                        }
+                        if current_index < rope.len_lines() {
+                            highlight_cache.update_range(
+                                highlighted_line.clone(),
+                                &syntax,
+                                &rope,
+                                current_index,
+                                current_index + chunk_len,
+                            );
+                            let _ = event_sink.submit_command(
+                                HIGHLIGHT,
+                                (current_index, current_index + chunk_len),
+                                owner_id,
+                            );
+                            current_index += chunk_len;
+                            // subsequent chunck are bigger, for better performance
+                            chunk_len = 1000;
+                        } else {
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                    }
+                });
+
+                self.bg_color = env.get(crate::theme::EDITOR_BACKGROUND);
+                self.fg_color = env.get(crate::theme::EDITOR_FOREGROUND);
+                self.fg_sel_color = env.get(crate::theme::SELECTION_BACKGROUND);
+                self.bg_sel_color = env.get(crate::theme::EDITOR_FOREGROUND);
+
+                self.update_highlighter(editor, 0);
+                // start notify
+                if let Some(f) = &editor.filename {
+                    self.start_watching_file(f);
+                }
+            }
+            LifeCycle::BuildFocusChain => {
+                ctx.register_for_focus();
+            }
+            _ => (),
+        }
+    }
+
+    fn update(&mut self, ctx: &mut UpdateCtx, old_data: &EditStack, data: &EditStack, _env: &Env) {
+        if !old_data.buffer.same_content(&data.buffer) {
+            let line = old_data
+                .first_caret()
+                .start_line(&old_data.buffer)
+                .min(data.first_caret().start_line(&data.buffer));
+            self.update_highlighter(data, line.index);
+        }
+        if !old_data.file.syntax.name.same(&data.file.syntax.name) {
+            self.update_highlighter(data, 0);
+        }
+        if !old_data.same(data) {
+            ctx.request_paint();
+        }
+        match (&old_data.filename, &data.filename) {
+            (None, None) => (),
+            (None, Some(f)) => {
+                self.start_watching_file(f);
+            }
+            (_, None) => (), // should never happens
+            (Some(l), Some(r)) if l != r => {
+                self.stop_watching_file(l);
+                self.start_watching_file(r);
+            }
+            _ => (),
+        }
+    }
+
+    fn layout(&mut self, layout_ctx: &mut LayoutCtx, bc: &BoxConstraints, _data: &EditStack, _env: &Env) -> Size {
+        self.metrics = CommonMetrics::new(layout_ctx.text(), &self.font_name, bc.max());
+        let h = if bc.max().height < self.metrics.font_height {
+            self.metrics.font_height + 2.
+        } else {
+            bc.max().height
+        };
+        self.size = Size::new(bc.max().width, h);
+
+        self.metrics = CommonMetrics::new(layout_ctx.text(), &self.font_name, self.size);
+        self.page_len = (self.size.height / self.metrics.font_height).round() as usize;
+
+        self.size
+    }
+
+    fn paint(&mut self, ctx: &mut PaintCtx, data: &EditStack, env: &Env) {
+        self.paint_editor(data, ctx, env);
+    }
+}
+
+impl EditorView {
+    pub fn new(owner_id: WidgetId, event_handler: Option<EditorEventHandler>) -> Self {
+        let e = EditorView {
+            bg_color: Color::BLACK,
+            fg_color: Color::WHITE,
+            fg_sel_color: Color::BLACK,
+            bg_sel_color: Color::WHITE,
+
+            metrics: Default::default(),
+            font_name: FONT_NAME.to_string(),
+            delta_x: 0.0,
+            delta_y: 0.0,
+            page_len: 0,
+
+            size: Size::new(1.0, 1.0),
+            owner_id,
+            longest_line_len: 0.,
+            held_state: HeldState::None,
+            bgworker_channel_tx: None,
+            highlighted_line: StyledLinesCache::new(),
+            event_handler,
+        };
+
+        e
+    }
+
+    fn update_highlighter(&self, data: &EditStack, line: usize) {
+        if let Some(tx) = self.bgworker_channel_tx.clone() {
+            match tx.send(BackgroundWorkerMessage::UpdateBuffer(
+                data.file.syntax.clone(),
+                data.buffer.rope.clone(),
+                line,
+            )) {
+                Ok(()) => (),
+                Err(_e) => {
+                    tracing::error!("Error sending data to the background worker!");
+                }
+            }
+        }
+    }
+
+    fn start_watching_file(&mut self, path: &PathBuf) {
+        if let Some(tx) = self.bgworker_channel_tx.clone() {
+            let _ = tx.send(BackgroundWorkerMessage::WatchFile(path.clone()));
+        }
+    }
+    fn stop_watching_file(&mut self, path: &PathBuf) {
+        if let Some(tx) = self.bgworker_channel_tx.clone() {
+            let _ = tx.send(BackgroundWorkerMessage::UnwatchFile(path.clone()));
+        }
+    }
+
+    fn stop_background_worker(&self) {
+        if let Some(tx) = self.bgworker_channel_tx.clone() {
+            match tx.send(BackgroundWorkerMessage::Stop) {
+                Ok(()) => (),
+                Err(_e) => {
+                    tracing::error!("Error stopping the background worker!");
+                }
+            }
+        }
+    }
+
+    fn handle_event(&mut self, event: &Event, ctx: &mut EventCtx, editor: &mut EditStack) -> bool {
+        if let Some(handler) = self.event_handler.clone() {
+            handler(ctx, event, self, editor);
+        }
+
+        if ctx.is_handled() {
+            return true;
+        }
+        match event {
+            Event::WindowConnected => {
+                ctx.request_focus();
+                false
+            }
+            Event::KeyDown(event) => {
+                match event {
+                    #[cfg(windows)]
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::ArrowDown,
+                        mods,
+                        ..
+                    } if mods.alt() && mods.ctrl() => {
+                        editor.duplicate_down();
+                        return true;
+                    }
+                    #[cfg(windows)]
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::ArrowUp,
+                        mods,
+                        ..
+                    } if mods.alt() && mods.ctrl() => {
+                        editor.duplicate_up();
+                        return true;
+                    }
+                    #[cfg(not(windows))]
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::ArrowDown,
+                        mods,
+                        ..
+                    } if mods.alt() && mods.shift() => {
+                        editor.duplicate_down();
+                        return true;
+                    }
+                    #[cfg(not(windows))]
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::ArrowUp,
+                        mods,
+                        ..
+                    } if mods.alt() && mods.shift() => {
+                        editor.duplicate_up();
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::ArrowRight,
+                        mods,
+                        ..
+                    } => {
+                        editor.forward(mods.shift(), mods.ctrl());
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::ArrowLeft,
+                        mods,
+                        ..
+                    } => {
+                        editor.backward(mods.shift(), mods.ctrl());
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::ArrowUp,
+                        mods,
+                        ..
+                    } => {
+                        editor.up(mods.shift());
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::ArrowDown,
+                        mods,
+                        ..
+                    } => {
+                        editor.down(mods.shift());
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::PageUp,
+                        mods,
+                        ..
+                    } => {
+                        for _ in 0..self.page_len {
+                            editor.up(mods.shift());
+                        }
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::PageDown,
+                        mods,
+                        ..
+                    } => {
+                        for _ in 0..self.page_len {
+                            editor.down(mods.shift())
+                        }
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::End,
+                        mods,
+                        ..
+                    } => {
+                        editor.end(mods.shift());
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::Home,
+                        mods,
+                        ..
+                    } => {
+                        editor.home(mods.shift());
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::Tab,
+                        ..
+                    } => {
+                        editor.tab();
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::Escape,
+                        ..
+                    } => {
+                        editor.cancel_mutli_carets();
+                        editor.cancel_selection();
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::Backspace,
+                        ..
+                    } => {
+                        editor.backspace();
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::Delete,
+                        ..
+                    } => {
+                        editor.delete();
+                        return true;
+                    }
+                    KeyEvent {
+                        key: druid::keyboard_types::Key::Enter,
+                        ..
+                    } => {
+                        editor.insert(editor.file.linefeed.to_str());
+                        return true;
+                    }
+                    _ => (),
+                }
+
+                if let druid::keyboard_types::Key::Character(text) = event.key.clone() {
+                    if event.mods.ctrl() || event.mods.alt() || event.mods.meta() {
+                        return false;
+                    }
+                    if text.chars().count() == 1 && text.chars().next().unwrap().is_ascii_control() {
+                        return false;
+                    }
+
+                    editor.insert(&text);
+                    return true;
+                }
+                false
+            }
+            Event::Wheel(event) => {
+                ctx.submit_command(
+                    SCROLL_TO
+                        .with((
+                            Some(self.delta_x - event.wheel_delta.x),
+                            Some(self.delta_y - event.wheel_delta.y),
+                        ))
+                        .to(self.owner_id),
+                );
+
+                if ctx.is_active() && event.buttons.contains(MouseButton::Left) {
+                    let (x, y) = self.pix_to_point(event.pos.x, event.pos.y, ctx, editor);
+                    let p = editor.point(x, y);
+                    editor.move_main_caret_to(p, true, false);
+                }
+                ctx.request_paint();
+                ctx.set_handled();
+                true
+            }
+            Event::MouseDown(event) => {
+                if matches!(event.button, MouseButton::Left) {
+                    let (x, y) = self.pix_to_point(event.pos.x, event.pos.y, ctx, editor);
+                    editor.cancel_mutli_carets();
+                    // FIXME: Update is not called if the caret position is not modified,
+                    let p = editor.point(x, y);
+                    match event.count {
+                        1 => {
+                            editor.move_main_caret_to(p, event.mods.shift(), false);
+                            self.held_state = HeldState::Grapheme;
+                        }
+                        2 => {
+                            editor.move_main_caret_to(p, event.mods.shift(), true);
+                            self.held_state = HeldState::Word;
+                        }
+                        3 => {
+                            editor.select_line(p.line, event.mods.shift());
+                            self.held_state = HeldState::Line;
+                        }
+                        4 => {
+                            editor.select_all();
+                            self.held_state = HeldState::None;
+                        }
+                        _ => (),
+                    }
+                    ctx.set_active(true);
+                }
+                ctx.request_focus();
+                ctx.request_paint();
+                ctx.set_handled();
+                true
+            }
+            Event::MouseUp(_event) => {
+                ctx.set_active(false);
+                self.held_state = HeldState::None;
+                true
+            }
+            Event::MouseMove(event) => {
+                if self.held_state.is_held() && ctx.is_active() && event.buttons.contains(MouseButton::Left) {
+                    let (x, y) = self.pix_to_point(event.pos.x, event.pos.y, ctx, editor);
+                    let p = editor.point(x, y);
+                    match self.held_state {
+                        HeldState::Grapheme => editor.move_main_caret_to(p, true, false),
+                        HeldState::Word => editor.move_main_caret_to(p, true, true),
+                        HeldState::Line => editor.select_line(p.line, true),
+                        HeldState::None => unreachable!(),
+                    }
+                    return true;
+                }
+                false
+            }
+            Event::WindowDisconnected => {
+                self.stop_background_worker();
+                true
+            }
+            /*
+                        Event::Command(cmd) if cmd.is(druid::commands::SAVE_FILE_AS) => {
+                            let file_info = cmd.get_unchecked(druid::commands::SAVE_FILE_AS).clone();
+                            if file_info.path().exists() {
+                                self.dialog()
+                                    //.items(item!["Yes", "No"])
+                                    .title("File exists! Overwrite?")
+                                    .on_select(move |result, ctx, text_editor, data| {
+                                        if result == DialogResult::Ok {
+                                            if let Err(e) = text_editor.save_as(data, file_info.path()) {
+                                                text_editor.alert(&format!("Error writing file: {}", e)).show(ctx);
+                                            }
+                                        };
+                                    })
+                                    .show(ctx);
+                                true
+                            } else {
+                                if let Err(e) = self.save_as(editor, file_info.path()) {
+                                    self.alert(&format!("Error writing file: {}", e)).show(ctx);
+                                }
+                                true
+                            }
+                        }
+                        Event::Command(cmd) if cmd.is(druid::commands::SAVE_FILE) => {
+                            if let Err(e) = self.save(editor) {
+                                self.alert(&format!("Error writing file: {}", e)).show(ctx);
+                            }
+                            true
+                        }
+             */
+            /*
+            Event::Command(cmd) if cmd.is(druid::commands::OPEN_FILE) => {
+                if let Some(file_info) = cmd.get(druid::commands::OPEN_FILE) {
+                    if let Err(_) = self.open(editor, file_info.path()) {
+                        self.alert("Error loading file").show(ctx);
+                    }
+                }
+                true
+            }
+             */
+            Event::Command(cmd) if cmd.is(REQUEST_NEXT_SEARCH) => {
+                if let Some(data) = cmd.get(REQUEST_NEXT_SEARCH) {
+                    editor.search_next(data);
+                }
+                true
+            }
+            Event::Command(cmd) if cmd.is(SELECT_LINE) => {
+                let (line, expand) = *cmd.get_unchecked(SELECT_LINE);
+                editor.buffer.select_line(line.into(), expand);
+                true
+            }
+            Event::Command(cmd) if cmd.is(SCROLL_TO) => {
+                let d = *cmd.get_unchecked(SCROLL_TO);
+                self.delta_x = d.0.unwrap_or(self.delta_x);
+                self.delta_y = d.1.unwrap_or(self.delta_y);
+                true
+            }
+            Event::Command(cmd) if cmd.is(RESET_HELD_STATE) => {
+                self.held_state = HeldState::None;
+                false
+            }
+            Event::Command(cmd) if cmd.is(HIGHLIGHT) => {
+                let d = *cmd.get_unchecked(HIGHLIGHT);
+
+                if self.visible_range().contains(&d.0)
+                    || self.visible_range().contains(&d.1)
+                    || (self.visible_range().start >= d.0 && self.visible_range().end <= d.1)
+                {
+                    ctx.request_paint();
+                }
+                true
+            }
+            Event::Command(cmd) if cmd.is(SET_EDITOR_EVENT_HANDLER) => {
+                let handler = *cmd.get_unchecked(SET_EDITOR_EVENT_HANDLER);
+                self.event_handler = handler;
+                true
+            }
+            /*
+            Event::Command(cmd) if cmd.is(RELOAD_FROM_DISK) => {
+                if editor.is_dirty() {
+                    ctx.set_handled();
+                    self.dialog()
+                        //.items(item!["Yes", "No"])
+                        .title("File was modified outside of NonePad\nDiscard unsaved change and reload?")
+                        .on_select(|result, ctx, text_editor, data| {
+                            if result == DialogResult::Ok {
+                                if let Err(e) = data.reload() {
+                                    text_editor
+                                        .alert(&format!(
+                                            "Error while reloading {}: {}",
+                                            data.filename.clone().unwrap_or_default().to_string_lossy(),
+                                            e
+                                        ))
+                                        .show(ctx);
+                                } else {
+                                    data.reset_dirty();
+                                }
+                            }
+                        })
+                        .show(ctx);
+                } else {
+                    if let Err(e) = editor.reload() {
+                        self.alert(&format!(
+                            "Error while reloading {}: {}",
+                            editor.filename.clone().unwrap_or_default().to_string_lossy(),
+                            e
+                        ))
+                            .show(ctx);
+                    }
+                }
+                true
+            }
+
+             */
+            Event::Command(cmd) if cmd.is(FILE_REMOVED) => {
+                editor.set_dirty();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn visible_range(&self) -> Range<usize> {
+        (-self.delta_y / self.metrics.font_height) as usize
+            ..((-self.delta_y + self.size.height) / self.metrics.font_height) as usize + 1
+    }
+
+    fn add_bounded_range_selection<L: TextLayout>(
+        &mut self,
+        y: f64,
+        range: Range<position::Relative>,
+        layout: &L,
+        path: &mut SelectionPath,
+    ) {
+        let s = layout.hit_test_text_position(range.start.into());
+        let e = layout.hit_test_text_position(range.end.into());
+
+        path.clear();
+        path.push(PathEl::MoveTo(Point::new(s.point.x.ceil() + 0.5, y.ceil() + 0.5)));
+        path.push(PathEl::LineTo(Point::new(e.point.x.ceil() + 0.5, y.ceil() + 0.5)));
+        path.push(PathEl::LineTo(Point::new(
+            e.point.x.ceil() + 0.5,
+            (self.metrics.font_height + y).ceil() + 0.5,
+        )));
+        path.push(PathEl::LineTo(Point::new(
+            s.point.x.ceil() + 0.5,
+            (self.metrics.font_height + y).ceil() + 0.5,
+        )));
+        path.push(PathEl::ClosePath);
+    }
+
+    fn add_range_from_selection<L: TextLayout>(
+        &mut self,
+        y: f64,
+        range: Range<position::Relative>,
+        layout: &L,
+        path: &mut Vec<PathEl>,
+    ) -> f64 {
+        let s = layout.hit_test_text_position(range.start.into());
+        let e = layout.hit_test_text_position(range.end.into());
+
+        path.clear();
+        path.push(PathEl::MoveTo(Point::new(
+            s.point.x.ceil() + 0.5,
+            (self.metrics.font_height + y).ceil() + 0.5,
+        )));
+        path.push(PathEl::LineTo(Point::new(s.point.x.ceil() + 0.5, y.ceil() + 0.5)));
+        path.push(PathEl::LineTo(Point::new(
+            (e.point.x + self.metrics.font_advance).ceil() + 0.5,
+            y.ceil() + 0.5,
+        )));
+        path.push(PathEl::LineTo(Point::new(
+            (e.point.x + self.metrics.font_advance).ceil() + 0.5,
+            (self.metrics.font_height + y).ceil() + 0.5,
+        )));
+        s.point.x //.ceil()+0.5
+    }
+
+    fn add_range_to_selection<L: TextLayout>(
+        &mut self,
+        y: f64,
+        range: Range<position::Relative>,
+        layout: &L,
+        path: &mut SelectionPath,
+    ) {
+        let e = layout.hit_test_text_position(range.end.into());
+        match &path.last_range {
+            Some(SelectionLineRange::RangeFrom(_)) if range.end == 0 => {
+                path.push(PathEl::ClosePath);
+            }
+            Some(SelectionLineRange::RangeFull) if range.end == 0 => {
+                path.push(PathEl::LineTo(Point::new(0.5, y.ceil() + 0.5)));
+                path.push(PathEl::ClosePath);
+            }
+            Some(SelectionLineRange::RangeFrom(_)) if path.last_x > e.point.x => {
+                path.push(PathEl::ClosePath);
+                path.push(PathEl::MoveTo(Point::new(e.point.x.ceil() + 0.5, y.ceil() + 0.5)));
+                path.push(PathEl::LineTo(Point::new(
+                    e.point.x.ceil() + 0.5,
+                    (self.metrics.font_height + y).ceil() + 0.5,
+                )));
+                path.push(PathEl::LineTo(Point::new(
+                    0.5,
+                    (self.metrics.font_height + y).ceil() + 0.5,
+                )));
+                path.push(PathEl::LineTo(Point::new(0.5, y.ceil() + 0.5)));
+                path.push(PathEl::ClosePath);
+            }
+            Some(SelectionLineRange::RangeFrom(_)) | Some(SelectionLineRange::RangeFull) => {
+                path.push(PathEl::LineTo(Point::new(e.point.x.ceil() + 0.5, y.ceil() + 0.5)));
+                path.push(PathEl::LineTo(Point::new(
+                    e.point.x.ceil() + 0.5,
+                    (self.metrics.font_height + y).ceil() + 0.5,
+                )));
+                path.push(PathEl::LineTo(Point::new(
+                    0.5,
+                    (self.metrics.font_height + y).ceil() + 0.5,
+                )));
+                path.push(PathEl::LineTo(Point::new(0.5, y.ceil() + 0.5)));
+                path.push(PathEl::ClosePath);
+            }
+            None => {
+                path.clear();
+                path.push(PathEl::MoveTo(Point::new(0.5, y.ceil() + 0.5)));
+                path.push(PathEl::LineTo(Point::new(e.point.x.ceil() + 0.5, y.ceil() + 0.5)));
+                path.push(PathEl::LineTo(Point::new(
+                    e.point.x.ceil() + 0.5,
+                    (self.metrics.font_height + y).ceil() + 0.5,
+                )));
+                path.push(PathEl::LineTo(Point::new(
+                    0.5,
+                    (self.metrics.font_height + y).ceil() + 0.5,
+                )));
+                path.push(PathEl::ClosePath);
+            }
+            _ => {
+                unreachable!();
+            }
+        }
+    }
+
+    fn add_range_full_selection<L: TextLayout>(
+        &mut self,
+        y: f64,
+        range: Range<position::Relative>,
+        layout: &L,
+        path: &mut SelectionPath,
+    ) {
+        let e = layout.hit_test_text_position(range.end.into());
+        match &path.last_range {
+            Some(SelectionLineRange::RangeFrom(_)) if path.last_x > e.point.x => {
+                path.push(PathEl::ClosePath);
+                path.push(PathEl::MoveTo(Point::new(0.5, y.ceil() + 0.5)));
+                path.push(PathEl::LineTo(Point::new(
+                    (e.point.x + self.metrics.font_advance).ceil() + 0.5,
+                    y.ceil() + 0.5,
+                )));
+                path.push(PathEl::LineTo(Point::new(
+                    (e.point.x + self.metrics.font_advance).ceil() + 0.5,
+                    (self.metrics.font_height + y).ceil() + 0.5,
+                )));
+            }
+            Some(SelectionLineRange::RangeFrom(_)) if path.last_x <= e.point.x => {
+                // insert a point at the begining of the line
+                path[0] = PathEl::LineTo(Point::new(path.last_x.ceil() + 0.5, y.ceil() + 0.5));
+                path.insert(0, PathEl::MoveTo(Point::new(0.5, y.ceil() + 0.5)));
+                path.push(PathEl::LineTo(Point::new(
+                    (e.point.x + self.metrics.font_advance).ceil() + 0.5,
+                    y.ceil() + 0.5,
+                )));
+                path.push(PathEl::LineTo(Point::new(
+                    (e.point.x + self.metrics.font_advance).ceil() + 0.5,
+                    (self.metrics.font_height + y).ceil() + 0.5,
+                )));
+            }
+            None => {
+                // the precedent line was outside the visible range
+                path.clear();
+                path.push(PathEl::MoveTo(Point::new(0.5, y.ceil() + 0.5)));
+                path.push(PathEl::LineTo(Point::new(
+                    (e.point.x + self.metrics.font_advance).ceil() + 0.5,
+                    y.ceil() + 0.5,
+                )));
+                path.push(PathEl::LineTo(Point::new(
+                    (e.point.x + self.metrics.font_advance).ceil() + 0.5,
+                    (self.metrics.font_height + y).ceil() + 0.5,
+                )));
+            }
+            _ => {
+                path.push(PathEl::LineTo(Point::new(
+                    (e.point.x + self.metrics.font_advance).ceil() + 0.5,
+                    y.ceil() + 0.5,
+                )));
+                path.push(PathEl::LineTo(Point::new(
+                    (e.point.x + self.metrics.font_advance).ceil() + 0.5,
+                    (self.metrics.font_height + y).ceil() + 0.5,
+                )));
+            }
+        }
+    }
+
+    fn paint_editor(&mut self, editor: &EditStack, ctx: &mut PaintCtx, env: &Env) -> bool {
+        let font = ctx.render_ctx.text().font_family(&self.font_name).unwrap();
+        let rect = Rect::new(0.0, 0.0, self.size.width, self.size.height);
+        ctx.render_ctx.fill(rect, &self.bg_color);
+
+        let clip_rect = ctx.size().to_rect().inset((1., 0., 0., 0.));
+        ctx.render_ctx.clip(clip_rect);
+        ctx.render_ctx
+            .transform(Affine::translate((self.delta_x + EDITOR_LEFT_PADDING, 0.0)));
+
+        let mut line = String::new();
+        let mut indices = Vec::new();
+        let mut ranges = Vec::new();
+        let mut selection_path = Vec::new();
+        let mut current_path = SelectionPath::new();
+
+        // Draw selection first
+        // TODO: cache layout to reuse it when we will draw the text
+        let mut dy = (self.delta_y / self.metrics.font_height).fract() * self.metrics.font_height;
+        for line_idx in self.visible_range() {
+            editor.displayable_line(position::Line::from(line_idx), &mut line, &mut indices, &mut Vec::new());
+            let layout = ctx
+                .render_ctx
+                .text()
+                .new_text_layout(line.clone()) // TODO: comment ne pas faire de clone?
+                .default_attribute(TextAttribute::Weight(FONT_WEIGTH))
+                .font(font.clone(), self.metrics.font_size)
+                .build()
+                .unwrap();
+
+            editor.selection_on_line(line_idx, &mut ranges);
+
+            for range in &ranges {
+                match range {
+                    SelectionLineRange::Range(r) => {
+                        // Simple case, the selection is contain on one line
+                        self.add_bounded_range_selection(
+                            dy,
+                            indices[r.start]..indices[r.end],
+                            &layout,
+                            &mut current_path,
+                        )
+                    }
+                    SelectionLineRange::RangeFrom(r) => {
+                        current_path.last_x = self.add_range_from_selection(
+                            dy,
+                            indices[r.start]..position::Relative::from(line.len() - 1),
+                            &layout,
+                            &mut current_path,
+                        )
+                    }
+                    SelectionLineRange::RangeTo(r) => self.add_range_to_selection(
+                        dy,
+                        position::Relative::from(0)..indices[r.end],
+                        &layout,
+                        &mut current_path,
+                    ),
+                    SelectionLineRange::RangeFull => self.add_range_full_selection(
+                        dy,
+                        position::Relative::from(0)..position::Relative::from(line.len() - 1),
+                        &layout,
+                        &mut current_path,
+                    ),
+                }
+                current_path.last_range = Some(range.clone());
+                if let Some(PathEl::ClosePath) = current_path.last() {
+                    selection_path.push(std::mem::take(&mut current_path));
+                }
+            }
+
+            dy += self.metrics.font_height;
+        }
+
+        // if path is unclosed, it can only be because the lastest visible line was a RangeFull
+        // We need to close it
+        match current_path.last() {
+            Some(PathEl::ClosePath) => (),
+            _ => {
+                current_path.push(PathEl::LineTo(Point::new(0.5, dy.ceil() + 0.5)));
+                current_path.push(PathEl::ClosePath);
+                selection_path.push(std::mem::take(&mut current_path));
+            }
+        }
+
+        for path in selection_path {
+            let path = BezPath::from_vec(path.elem);
+            let brush = ctx.render_ctx.solid_brush(self.fg_sel_color.clone());
+            ctx.render_ctx.fill(&path, &brush);
+            let brush = ctx.render_ctx.solid_brush(self.bg_sel_color.clone());
+            ctx.render_ctx.stroke(&path, &brush, 1.);
+        }
+
+        let mut dy = (self.delta_y / self.metrics.font_height).fract() * self.metrics.font_height;
+        for line_idx in self.visible_range() {
+            editor.displayable_line(position::Line::from(line_idx), &mut line, &mut indices, &mut Vec::new());
+            let mut layout = ctx
+                .render_ctx
+                .text()
+                .new_text_layout(line.clone())
+                .default_attribute(TextAttribute::Weight(FONT_WEIGTH))
+                .font(font.clone(), self.metrics.font_size)
+                .text_color(self.fg_color.clone());
+            if line_idx < editor.len_lines() {
+                if let Some(highlight) = self.highlighted_line.lines.lock().unwrap().get(line_idx) {
+                    for h in highlight.iter() {
+                        let color = TextAttribute::TextColor(Color::rgba8(
+                            h.style.foreground.r,
+                            h.style.foreground.g,
+                            h.style.foreground.b,
+                            h.style.foreground.a,
+                        ));
+                        let start = indices.get(h.range.start);
+                        let end = indices.get(h.range.end);
+                        if start.is_some() && end.is_some() {
+                            if h.style.font_style.contains(syntect::highlighting::FontStyle::ITALIC) {
+                                layout = layout.range_attribute(
+                                    start.unwrap().index..end.unwrap().index,
+                                    TextAttribute::Style(FontStyle::Italic),
+                                );
+                            }
+                            layout = layout.range_attribute(start.unwrap().index..end.unwrap().index, color);
+                        }
+                    }
+                }
+            }
+            let layout = layout.build().unwrap();
+
+            ctx.render_ctx.draw_text(&layout, (0.0, dy));
+
+            self.longest_line_len = self.longest_line_len.max(layout.image_bounds().width());
+
+            if ctx.has_focus() {
+                editor.carets_on_line(position::Line::from(line_idx)).for_each(|c| {
+                    let metrics = layout.hit_test_text_position(indices[c.relative().index].index);
+                    ctx.render_ctx.stroke(
+                        Line::new(
+                            (metrics.point.x.ceil(), (self.metrics.font_height + dy).ceil()),
+                            (metrics.point.x.ceil(), dy.ceil()),
+                        ),
+                        &env.get(crate::theme::EDITOR_CURSOR_FOREGROUND),
+                        2.0,
+                    );
+                });
+            }
+
+            dy += self.metrics.font_height;
+        }
+
+        false
+    }
+
+    fn pix_to_point(&self, x: f64, y: f64, ctx: &mut EventCtx, editor: &EditStack) -> (usize, usize) {
+        let x = (x - self.delta_x - EDITOR_LEFT_PADDING).max(0.);
+        let y = (y - self.delta_y).max(0.);
+        let line = ((y / self.metrics.font_height) as usize).min(editor.len_lines() - 1);
+
+        let mut buf = String::new();
+        let mut i = Vec::new();
+        editor.displayable_line(line.into(), &mut buf, &mut Vec::new(), &mut i);
+
+        let layout = self.text_layout(ctx.text(), buf);
+        let rel = rope_utils::relative_to_column(
+            i[layout.hit_test_point((x, 0.0).into()).idx],
+            line.into(),
+            &editor.buffer,
+        )
+            .index;
+
+        (rel, line)
+    }
+
+    fn text_layout(&self, text: &mut PietText, buf: String) -> impl druid::piet::TextLayout {
+        let font = text.font_family(&self.font_name).unwrap();
+        text.new_text_layout(buf)
+            .default_attribute(TextAttribute::Weight(FONT_WEIGTH))
+            .font(font, self.metrics.font_size)
+            .build()
+            .unwrap()
+    }
+
+    fn put_caret_in_visible_range(&mut self, ctx: &mut EventCtx, editor: &EditStack) {
+        if editor.has_many_carets() {
+            return;
+        }
+        let caret = editor.main_caret();
+        let y = caret.line().index as f64 * self.metrics.font_height;
+
+        if y > -self.delta_y + self.size.height - self.metrics.font_height {
+            self.delta_y = -y + self.size.height - self.metrics.font_height;
+        }
+        if y < -self.delta_y {
+            self.delta_y = -y;
+        }
+
+        let mut buf = String::new();
+        let mut i = Vec::new();
+        editor.displayable_line(caret.line(), &mut buf, &mut i, &mut Vec::new());
+
+        let layout = self.text_layout(ctx.text(), buf);
+
+        let hit = layout.hit_test_text_position(i[caret.relative().index].index);
+        let x = hit.point.x;
+        if x > -self.delta_x + self.size.width - self.metrics.font_advance - EDITOR_LEFT_PADDING {
+            self.delta_x = -x + self.size.width - self.metrics.font_advance - EDITOR_LEFT_PADDING;
+        }
+        if x < -self.delta_x {
+            self.delta_x = -x;
+        }
+
+        ctx.submit_command(
+            SCROLL_TO
+                .with((Some(self.delta_x), Some(self.delta_y)))
+                .to(self.owner_id),
+        );
+    }
+
+    pub fn navigate_to_line(&mut self, ctx: &mut EventCtx, editor: &mut EditStack, line: position::Line) {
+        if line.index < editor.len_lines() {
+            let start = line.start(&editor.buffer);
+            editor.cancel_mutli_carets();
+            editor.move_main_caret_to(start, false, false);
+            self.put_caret_in_visible_range(ctx, editor);
+        }
+    }
+
+    pub fn save_as<P>(&mut self, editor: &mut EditStack, filename: P) -> anyhow::Result<()>
+        where
+            P: AsRef<Path>,
+    {
+        editor.save(&filename)?;
+        editor.filename = Some(filename.as_ref().to_path_buf());
+        self.update_highlighter(editor, 0);
+        Ok(())
+    }
+
+    pub fn save(&mut self, editor: &mut EditStack) -> anyhow::Result<()> {
+        anyhow::ensure!(editor.filename.is_some(), "editor.filename must not be None");
+        editor.save(editor.filename.clone().as_ref().unwrap())?;
+        self.update_highlighter(editor, 0);
+        Ok(())
+    }
+
+    pub fn open<P>(&mut self, editor: &mut EditStack, filename: P) -> anyhow::Result<()>
+        where
+            P: AsRef<Path>,
+    {
+        editor.open(filename)?;
+        self.update_highlighter(editor, 0);
+
+        Ok(())
+    }
+}
