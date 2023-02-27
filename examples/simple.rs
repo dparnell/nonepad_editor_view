@@ -4,10 +4,10 @@
 use druid::widget::prelude::*;
 use druid::{AppLauncher, Application, ClipboardFormat, Color, Data, HotKey, Lens, SysMods, WidgetExt, WindowDesc};
 use once_cell::sync::Lazy;
-use nonepad_editor::text_buffer::EditStack;
-use nonepad_editor::text_buffer::syntax::SYNTAXSET;
-use nonepad_editor::text_editor;
-use nonepad_editor::theme::Theme;
+use nonepad_editor_view::text_buffer::EditStack;
+use nonepad_editor_view::text_buffer::syntax::SYNTAXSET;
+use nonepad_editor_view::text_editor;
+use nonepad_editor_view::theme::Theme;
 
 #[derive(Clone, Data, Lens)]
 struct SimpleState {
