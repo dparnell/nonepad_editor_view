@@ -30,18 +30,14 @@ pub const FONT_SIZE: f64 = 14.;
 pub const FONT_WEIGTH: FontWeight = FontWeight::SEMI_BOLD;
 pub const EDITOR_LEFT_PADDING: f64 = 2.;
 pub const SCROLLBAR_X_PADDING: f64 = 2.;
-
 pub const REQUEST_NEXT_SEARCH: Selector<String> = Selector::new("nonepad.editor.request_next_search");
-
 pub const RESET_HELD_STATE: Selector<()> = Selector::new("nonepad.all.reste_held_state");
-
-const SCROLL_TO: Selector<(Option<f64>, Option<f64>)> = Selector::new("nonepad.editor.scroll_to_rect");
-const SELECT_LINE: Selector<(usize, bool)> = Selector::new("nonepad.editor.select_line");
-const HIGHLIGHT: Selector<(usize, usize)> = Selector::new("nonepad.editor.highlight");
-//const RELOAD_FROM_DISK: Selector<()> = Selector::new("nonepad.editor.reload_from_disk");
-const FILE_REMOVED: Selector<()> = Selector::new("nonepad.editor.file_removed");
-
-const SET_EDITOR_EVENT_HANDLER: Selector<Option<EditorEventHandler>> = Selector::new("nonepad.editor.event_handler");
+pub const SCROLL_TO: Selector<(Option<f64>, Option<f64>)> = Selector::new("nonepad.editor.scroll_to_rect");
+pub const SELECT_LINE: Selector<(usize, bool)> = Selector::new("nonepad.editor.select_line");
+pub const HIGHLIGHT: Selector<(usize, usize)> = Selector::new("nonepad.editor.highlight");
+pub const RELOAD_FROM_DISK: Selector<()> = Selector::new("nonepad.editor.reload_from_disk");
+pub const FILE_REMOVED: Selector<()> = Selector::new("nonepad.editor.file_removed");
+pub const SET_EDITOR_EVENT_HANDLER: Selector<Option<EditorEventHandler>> = Selector::new("nonepad.editor.event_handler");
 
 pub struct TextEditor {
     gutter_id: WidgetId,

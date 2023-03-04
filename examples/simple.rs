@@ -3,7 +3,6 @@
 
 use druid::widget::prelude::*;
 use druid::{AppLauncher, Application, ClipboardFormat, Color, Data, HotKey, Lens, SysMods, WidgetExt, WindowDesc};
-use once_cell::sync::Lazy;
 use nonepad_editor_view::text_buffer::EditStack;
 use nonepad_editor_view::text_buffer::syntax::SYNTAXSET;
 use nonepad_editor_view::text_editor;
@@ -58,26 +57,26 @@ pub fn main() {
         .expect("Failed to launch application");
 }
 
-const ALL_HOTKEY: Lazy<HotKey> = Lazy::new(|| HotKey::new(SysMods::Cmd, "a"));
-const CUT_HOTKEY: Lazy<HotKey> = Lazy::new(|| HotKey::new(SysMods::Cmd, "x"));
-const COPY_HOTKEY: Lazy<HotKey> = Lazy::new(|| HotKey::new(SysMods::Cmd, "c"));
-const PASTE_HOTKEY: Lazy<HotKey> = Lazy::new(|| HotKey::new(SysMods::Cmd, "v"));
-const UNDO_HOTKEY: Lazy<HotKey> = Lazy::new(|| HotKey::new(SysMods::Cmd, "z"));
-const REDO_HOTKEY: Lazy<HotKey> = Lazy::new(|| HotKey::new(SysMods::CmdShift, "Z"));
-const REDO2_HOTKEY: Lazy<HotKey> = Lazy::new(|| HotKey::new(SysMods::Cmd, "y"));
-
 fn build_root_widget() -> impl Widget<SimpleState> {
-    text_editor::new(Some(|ctx, event, _view, editor| {
+    let all_hotkey = HotKey::new(SysMods::Cmd, "a");
+    let cut_hotkey = HotKey::new(SysMods::Cmd, "x");
+    let copy_hotkey = HotKey::new(SysMods::Cmd, "c");
+    let paste_hotkey = HotKey::new(SysMods::Cmd, "v");
+    let undo_hotkey = HotKey::new(SysMods::Cmd, "z");
+    let redo_hotkey = HotKey::new(SysMods::CmdShift, "Z");
+    let redo2_hotkey = HotKey::new(SysMods::Cmd, "y");
+
+    text_editor::new(Some(Box::new(move |ctx, event, editor| {
         match event {
             Event::KeyDown(event) => {
-                if CUT_HOTKEY.matches(event) {
+                if cut_hotkey.matches(event) {
                     Application::global().clipboard().put_string(editor.selected_text());
                     editor.delete();
                     ctx.set_handled();
-                } else if COPY_HOTKEY.matches(event) {
+                } else if copy_hotkey.matches(event) {
                     Application::global().clipboard().put_string(editor.selected_text());
                     ctx.set_handled();
-                } else if PASTE_HOTKEY.matches(event) {
+                } else if paste_hotkey.matches(event) {
                     let clipboard = Application::global().clipboard();
                     let supported_types = &[ClipboardFormat::TEXT];
                     let best_available_type = clipboard.preferred_format(supported_types);
@@ -88,18 +87,18 @@ fn build_root_widget() -> impl Widget<SimpleState> {
                         editor.insert(String::from_utf8_lossy(&data).as_ref());
                     }
                     ctx.set_handled();
-                } else if UNDO_HOTKEY.matches(event) {
+                } else if undo_hotkey.matches(event) {
                     editor.undo();
                     ctx.set_handled();
-                } else if REDO_HOTKEY.matches(event) || REDO2_HOTKEY.matches(event) {
+                } else if redo_hotkey.matches(event) || redo2_hotkey.matches(event) {
                     editor.redo();
                     ctx.set_handled();
-                } else if ALL_HOTKEY.matches(event) {
+                } else if all_hotkey.matches(event) {
                     editor.select_all();
                     ctx.set_handled();
                 }
             }
             _ => ()
         }
-    })).lens(SimpleState::edit_stack)
+    }))).lens(SimpleState::edit_stack)
 }

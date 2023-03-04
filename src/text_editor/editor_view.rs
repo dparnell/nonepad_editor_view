@@ -12,7 +12,7 @@ use ropey::Rope;
 use syntect::parsing::SyntaxReference;
 use crate::text_buffer::{EditStack, position, rope_utils, SelectionLineRange};
 use crate::text_buffer::syntax::{StateCache, StyledLinesCache, SYNTAXSET};
-use crate::text_editor::{EDITOR_LEFT_PADDING, env, FILE_REMOVED, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, SET_EDITOR_EVENT_HANDLER};
+use crate::text_editor::{EDITOR_LEFT_PADDING, env, FILE_REMOVED, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE};
 
 #[derive(Debug, Default)]
 struct SelectionPath {
@@ -127,7 +127,7 @@ pub enum BackgroundWorkerMessage {
     UpdateBuffer(WidgetId, SyntaxReference, Rope, usize),
 }
 
-pub type EditorEventHandler = fn(&mut EventCtx, &Event, &mut EditorView, &mut EditStack) -> ();
+pub type EditorEventHandler = Box<dyn FnMut(&mut EventCtx, &Event, &mut EditStack) -> ()>;
 
 pub struct EditorView {
     delta_y: f64,
@@ -362,8 +362,8 @@ impl EditorView {
     }
 
     fn handle_event(&mut self, event: &Event, ctx: &mut EventCtx, editor: &mut EditStack) -> bool {
-        if let Some(handler) = self.event_handler.clone() {
-            handler(ctx, event, self, editor);
+        if let Some(handler) = self.event_handler.as_deref_mut() {
+            handler(ctx, event, editor);
         }
 
         if ctx.is_handled() {
@@ -676,11 +676,6 @@ impl EditorView {
                 {
                     ctx.request_paint();
                 }
-                true
-            }
-            Event::Command(cmd) if cmd.is(SET_EDITOR_EVENT_HANDLER) => {
-                let handler = *cmd.get_unchecked(SET_EDITOR_EVENT_HANDLER);
-                self.event_handler = handler;
                 true
             }
             /*
