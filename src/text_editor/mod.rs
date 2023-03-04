@@ -38,7 +38,7 @@ pub const RESET_HELD_STATE: Selector<()> = Selector::new("nonepad.all.reste_held
 const SCROLL_TO: Selector<(Option<f64>, Option<f64>)> = Selector::new("nonepad.editor.scroll_to_rect");
 const SELECT_LINE: Selector<(usize, bool)> = Selector::new("nonepad.editor.select_line");
 const HIGHLIGHT: Selector<(usize, usize)> = Selector::new("nonepad.editor.highlight");
-const RELOAD_FROM_DISK: Selector<()> = Selector::new("nonepad.editor.reload_from_disk");
+//const RELOAD_FROM_DISK: Selector<()> = Selector::new("nonepad.editor.reload_from_disk");
 const FILE_REMOVED: Selector<()> = Selector::new("nonepad.editor.file_removed");
 
 const SET_EDITOR_EVENT_HANDLER: Selector<Option<EditorEventHandler>> = Selector::new("nonepad.editor.event_handler");

@@ -1,17 +1,18 @@
+use std::collections::HashMap;
 use std::ops::{Deref, DerefMut, Range};
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::thread;
-use std::time::Duration;
 use druid::kurbo::{BezPath, Line, PathEl};
 use druid::piet::{PietText, Text, TextAttribute, TextLayout, TextLayoutBuilder};
-use druid::{Affine, BoxConstraints, Color, Data, Env, Event, EventCtx, FontStyle, KeyEvent, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, Point, Rect, RenderContext, Size, UpdateCtx, Widget, WidgetId};
+use druid::{Affine, BoxConstraints, Color, Data, Env, Event, EventCtx, ExtEventSink, FontStyle, KeyEvent, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, Point, Rect, RenderContext, Size, UpdateCtx, Widget, WidgetId};
+use once_cell::sync::Lazy;
 use ropey::Rope;
 use syntect::parsing::SyntaxReference;
 use crate::text_buffer::{EditStack, position, rope_utils, SelectionLineRange};
 use crate::text_buffer::syntax::{StateCache, StyledLinesCache, SYNTAXSET};
-use crate::text_editor::{EDITOR_LEFT_PADDING, env, FILE_REMOVED, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, RELOAD_FROM_DISK, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, SET_EDITOR_EVENT_HANDLER};
+use crate::text_editor::{EDITOR_LEFT_PADDING, env, FILE_REMOVED, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, SET_EDITOR_EVENT_HANDLER};
 
 #[derive(Debug, Default)]
 struct SelectionPath {
@@ -121,10 +122,9 @@ impl HeldState {
 }
 
 pub enum BackgroundWorkerMessage {
-    Stop,
-    UpdateBuffer(SyntaxReference, Rope, usize),
-    WatchFile(PathBuf),
-    UnwatchFile(PathBuf),
+    Start(WidgetId, ExtEventSink, StyledLinesCache),
+    Stop(WidgetId),
+    UpdateBuffer(WidgetId, SyntaxReference, Rope, usize),
 }
 
 pub type EditorEventHandler = fn(&mut EventCtx, &Event, &mut EditorView, &mut EditStack) -> ();
@@ -154,6 +154,83 @@ pub struct EditorView {
     event_handler: Option<EditorEventHandler>
 }
 
+struct State<'a> {
+    pub events: ExtEventSink,
+    pub syntax: &'a SyntaxReference,
+    pub current_index: usize,
+    pub chunk_len: usize,
+    pub rope: Rope,
+    pub highlight_cache: StateCache,
+    pub highlighted_line: StyledLinesCache
+}
+
+impl<'a> State <'a> {
+    pub fn process_chunk(&mut self, owner_id: WidgetId) {
+        if self.current_index < self.rope.len_lines() {
+            self.highlight_cache.update_range(
+                self.highlighted_line.clone(),
+                &self.syntax,
+                &self.rope,
+                self.current_index,
+                self.current_index + self.chunk_len,
+            );
+            let _ = self.events.submit_command(
+                HIGHLIGHT,
+                (self.current_index, self.current_index + self.chunk_len),
+                owner_id,
+            );
+            self.current_index += self.chunk_len;
+            // subsequent chunck are bigger, for better performance
+            self.chunk_len = 1000;
+        }
+    }
+}
+
+const BACKGROUND_TX: Lazy<Sender<BackgroundWorkerMessage>> = Lazy::new(|| {
+    let (tx, rx) = mpsc::channel::<BackgroundWorkerMessage>();
+
+    thread::spawn(move || {
+        let mut states = HashMap::new();
+        loop {
+            match rx.try_recv() {
+                Ok(message) => match message {
+                    BackgroundWorkerMessage::Start(id, events, lines) => {
+                        let mut state = State {
+                            events,
+                            syntax: SYNTAXSET.find_syntax_plain_text(),
+                            current_index: 0,
+                            chunk_len: 100,
+                            rope: Rope::new(),
+                            highlight_cache: StateCache::new(),
+                            highlighted_line: lines,
+                        };
+                        state.process_chunk(id);
+                        states.insert(id, state);
+                    }
+                    BackgroundWorkerMessage::Stop(id) => {
+                        states.remove(&id);
+                    },
+                    BackgroundWorkerMessage::UpdateBuffer(id, s, rope, start) => {
+                        if let Some(state) = states.get_mut(&id) {
+                            state.syntax = SYNTAXSET.find_syntax_by_name(&s.name).unwrap();
+                            state.rope = rope;
+                            state.current_index = start;
+                            state.chunk_len = 1000;
+
+                            state.process_chunk(id);
+                        }
+                    }
+                },
+                _ => (),
+            }
+
+        }
+    });
+
+    tx
+});
+
+
 impl Widget<EditStack> for EditorView {
     fn event(&mut self, ctx: &mut EventCtx, event: &Event, editor: &mut EditStack, _env: &Env) {
         let old_dx = self.delta_x;
@@ -177,68 +254,10 @@ impl Widget<EditStack> for EditorView {
     fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle, editor: &EditStack, env: &Env) {
         match event {
             LifeCycle::WidgetAdded => {
-                let (tx, rx) = mpsc::channel();
-                self.bgworker_channel_tx = Some(tx);
-                let highlighted_line = self.highlighted_line.clone();
-                let owner_id = self.owner_id.clone();
-                let event_sink = ctx.get_external_handle();
-                thread::spawn(move || {
-                    let mut syntax = SYNTAXSET.find_syntax_plain_text();
-                    let mut highlight_cache = StateCache::new();
-                    let mut current_index = 0;
-                    let mut chunk_len = 100;
-                    let mut rope = Rope::new();
-                    let mut hotwatch = hotwatch::Hotwatch::new().unwrap(); // TODO, will crash the highlighter if hotwatch couldn't be initialized
-                    loop {
-                        match rx.try_recv() {
-                            Ok(message) => match message {
-                                BackgroundWorkerMessage::Stop => return,
-                                BackgroundWorkerMessage::UpdateBuffer(s, r, start) => {
-                                    rope = r;
-                                    current_index = start;
-                                    // The first chunk is smaller, to repaint quickly with highlight
-                                    chunk_len = 100;
-                                    syntax = SYNTAXSET.find_syntax_by_name(&s.name).unwrap();
-                                }
-                                BackgroundWorkerMessage::WatchFile(p) => {
-                                    let es = event_sink.clone();
-                                    let _ = hotwatch.watch(p, move |e| match e {
-                                        hotwatch::Event::Write(_) | hotwatch::Event::Create(_) => {
-                                            let _ = es.submit_command(RELOAD_FROM_DISK, (), owner_id);
-                                        }
-                                        hotwatch::Event::Remove(_) => {
-                                            let _ = es.submit_command(FILE_REMOVED, (), owner_id);
-                                        }
-                                        _ => {}
-                                    });
-                                }
-                                BackgroundWorkerMessage::UnwatchFile(p) => {
-                                    let _ = hotwatch.unwatch(p);
-                                }
-                            },
-                            _ => (),
-                        }
-                        if current_index < rope.len_lines() {
-                            highlight_cache.update_range(
-                                highlighted_line.clone(),
-                                &syntax,
-                                &rope,
-                                current_index,
-                                current_index + chunk_len,
-                            );
-                            let _ = event_sink.submit_command(
-                                HIGHLIGHT,
-                                (current_index, current_index + chunk_len),
-                                owner_id,
-                            );
-                            current_index += chunk_len;
-                            // subsequent chunck are bigger, for better performance
-                            chunk_len = 1000;
-                        } else {
-                            thread::sleep(Duration::from_millis(1));
-                        }
-                    }
-                });
+                self.bgworker_channel_tx = Some(BACKGROUND_TX.clone());
+
+                let start = BackgroundWorkerMessage::Start(self.owner_id, ctx.get_external_handle(), self.highlighted_line.clone());
+                self.bgworker_channel_tx.clone().expect("channel not present").send(start).expect("message send failed");
 
                 self.bg_color = env.get(crate::theme::EDITOR_BACKGROUND);
                 self.fg_color = env.get(crate::theme::EDITOR_FOREGROUND);
@@ -246,10 +265,6 @@ impl Widget<EditStack> for EditorView {
                 self.bg_sel_color = env.get(crate::theme::EDITOR_FOREGROUND);
 
                 self.update_highlighter(editor, 0);
-                // start notify
-                if let Some(f) = &editor.filename {
-                    self.start_watching_file(f);
-                }
             }
             LifeCycle::BuildFocusChain => {
                 ctx.register_for_focus();
@@ -271,18 +286,6 @@ impl Widget<EditStack> for EditorView {
         }
         if !old_data.same(data) {
             ctx.request_paint();
-        }
-        match (&old_data.filename, &data.filename) {
-            (None, None) => (),
-            (None, Some(f)) => {
-                self.start_watching_file(f);
-            }
-            (_, None) => (), // should never happens
-            (Some(l), Some(r)) if l != r => {
-                self.stop_watching_file(l);
-                self.start_watching_file(r);
-            }
-            _ => (),
         }
     }
 
@@ -334,7 +337,7 @@ impl EditorView {
 
     fn update_highlighter(&self, data: &EditStack, line: usize) {
         if let Some(tx) = self.bgworker_channel_tx.clone() {
-            match tx.send(BackgroundWorkerMessage::UpdateBuffer(
+            match tx.send(BackgroundWorkerMessage::UpdateBuffer(self.owner_id,
                 data.file.syntax.clone(),
                 data.buffer.rope.clone(),
                 line,
@@ -347,20 +350,9 @@ impl EditorView {
         }
     }
 
-    fn start_watching_file(&mut self, path: &PathBuf) {
-        if let Some(tx) = self.bgworker_channel_tx.clone() {
-            let _ = tx.send(BackgroundWorkerMessage::WatchFile(path.clone()));
-        }
-    }
-    fn stop_watching_file(&mut self, path: &PathBuf) {
-        if let Some(tx) = self.bgworker_channel_tx.clone() {
-            let _ = tx.send(BackgroundWorkerMessage::UnwatchFile(path.clone()));
-        }
-    }
-
     fn stop_background_worker(&self) {
         if let Some(tx) = self.bgworker_channel_tx.clone() {
-            match tx.send(BackgroundWorkerMessage::Stop) {
+            match tx.send(BackgroundWorkerMessage::Stop(self.owner_id)) {
                 Ok(()) => (),
                 Err(_e) => {
                     tracing::error!("Error stopping the background worker!");
