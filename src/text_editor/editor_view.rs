@@ -6,7 +6,7 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use druid::kurbo::{BezPath, Line, PathEl};
 use druid::piet::{PietText, Text, TextAttribute, TextLayout, TextLayoutBuilder};
-use druid::{Affine, BoxConstraints, Color, Data, Env, Event, EventCtx, ExtEventSink, FontStyle, KeyEvent, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, Point, Rect, RenderContext, Size, UpdateCtx, Widget, WidgetId};
+use druid::{Affine, Application, BoxConstraints, ClipboardFormat, Color, Data, Env, Event, EventCtx, ExtEventSink, FontStyle, HotKey, KeyEvent, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, Point, Rect, RenderContext, Size, SysMods, UpdateCtx, Widget, WidgetId};
 use once_cell::sync::Lazy;
 use ropey::Rope;
 use syntect::parsing::SyntaxReference;
@@ -128,6 +128,12 @@ pub enum BackgroundWorkerMessage {
 }
 
 pub type EditorEventHandler = Box<dyn FnMut(&mut EventCtx, &Event, &mut EditStack) -> ()>;
+
+pub enum EditorKeyBindings {
+    None,
+    Cua,
+    Custom(EditorEventHandler)
+}
 
 pub struct EditorView {
     delta_y: f64,
@@ -310,7 +316,14 @@ impl Widget<EditStack> for EditorView {
 }
 
 impl EditorView {
-    pub fn new(owner_id: WidgetId, event_handler: Option<EditorEventHandler>) -> Self {
+    pub fn new(owner_id: WidgetId, key_bindings: EditorKeyBindings) -> Self {
+
+        let event_handler = match key_bindings {
+            EditorKeyBindings::None => None,
+            EditorKeyBindings::Cua => Some(EditorView::make_cua_key_bindings()),
+            EditorKeyBindings::Custom(handler) => Some(handler)
+        };
+
         let e = EditorView {
             bg_color: Color::BLACK,
             fg_color: Color::WHITE,
@@ -333,6 +346,52 @@ impl EditorView {
         };
 
         e
+    }
+
+    fn make_cua_key_bindings() -> EditorEventHandler {
+        let all_hotkey = HotKey::new(SysMods::Cmd, "a");
+        let cut_hotkey = HotKey::new(SysMods::Cmd, "x");
+        let copy_hotkey = HotKey::new(SysMods::Cmd, "c");
+        let paste_hotkey = HotKey::new(SysMods::Cmd, "v");
+        let undo_hotkey = HotKey::new(SysMods::Cmd, "z");
+        let redo_hotkey = HotKey::new(SysMods::CmdShift, "Z");
+        let redo2_hotkey = HotKey::new(SysMods::Cmd, "y");
+
+        Box::new(move |ctx, event, editor| {
+            match event {
+                Event::KeyDown(event) => {
+                    if cut_hotkey.matches(event) {
+                        Application::global().clipboard().put_string(editor.selected_text());
+                        editor.delete();
+                        ctx.set_handled();
+                    } else if copy_hotkey.matches(event) {
+                        Application::global().clipboard().put_string(editor.selected_text());
+                        ctx.set_handled();
+                    } else if paste_hotkey.matches(event) {
+                        let clipboard = Application::global().clipboard();
+                        let supported_types = &[ClipboardFormat::TEXT];
+                        let best_available_type = clipboard.preferred_format(supported_types);
+                        if let Some(format) = best_available_type {
+                            let data = clipboard
+                                .get_format(format)
+                                .expect("I promise not to unwrap in production");
+                            editor.insert(String::from_utf8_lossy(&data).as_ref());
+                        }
+                        ctx.set_handled();
+                    } else if undo_hotkey.matches(event) {
+                        editor.undo();
+                        ctx.set_handled();
+                    } else if redo_hotkey.matches(event) || redo2_hotkey.matches(event) {
+                        editor.redo();
+                        ctx.set_handled();
+                    } else if all_hotkey.matches(event) {
+                        editor.select_all();
+                        ctx.set_handled();
+                    }
+                }
+                _ => ()
+            }
+        })
     }
 
     fn update_highlighter(&self, data: &EditStack, line: usize) {

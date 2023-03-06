@@ -2,11 +2,11 @@ use druid::{BoxConstraints, Env, Event, EventCtx, FontWeight, LayoutCtx, LifeCyc
 use druid::widget::Flex;
 use super::text_buffer::{EditStack};
 
-mod editor_view;
-mod gutter;
-mod scroll_bar;
+pub mod editor_view;
+pub mod gutter;
+pub mod scroll_bar;
 
-use crate::text_editor::editor_view::{CommonMetrics, EditorEventHandler, EditorView};
+use crate::text_editor::editor_view::{CommonMetrics, EditorEventHandler, EditorKeyBindings, EditorView};
 use crate::text_editor::gutter::Gutter;
 use crate::text_editor::scroll_bar::{ScrollBar, ScrollBarDirection, ScrollBarSpacer};
 
@@ -57,7 +57,7 @@ impl TextEditor {
         data.buffer.max_visible_line_grapheme_len().saturating_sub(3) as f64 * self.metrics.font_advance
     }
 
-    fn new(editor_event_handler: Option<EditorEventHandler>) -> Self {
+    fn new(key_bindings: EditorKeyBindings) -> Self {
         let id = WidgetId::next();
         let gutter_id = WidgetId::next();
         let editor_id = WidgetId::next();
@@ -74,7 +74,7 @@ impl TextEditor {
                 .with_child(Gutter::new(id).with_id(gutter_id))
                 .with_flex_child(
                     Flex::column()
-                        .with_flex_child(EditorView::new(id, editor_event_handler).with_id(editor_id), 1.0)
+                        .with_flex_child(EditorView::new(id, key_bindings).with_id(editor_id), 1.0)
                         .with_child(ScrollBar::new(id, ScrollBarDirection::Horizontal).with_id(hscroll_id)),
                     1.0,
                 )
@@ -141,8 +141,8 @@ impl Widget<EditStack> for TextEditor {
     }
 }
 
-pub fn new(editor_event_handler: Option<EditorEventHandler>) -> impl Widget<EditStack> {
-    let t = TextEditor::new(editor_event_handler);
+pub fn new(key_bindings: EditorKeyBindings) -> impl Widget<EditStack> {
+    let t = TextEditor::new(key_bindings);
     let id = t.id;
     t.with_id(id)
 }

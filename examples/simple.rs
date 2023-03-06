@@ -2,10 +2,11 @@
 #![windows_subsystem = "windows"]
 
 use druid::widget::prelude::*;
-use druid::{AppLauncher, Application, ClipboardFormat, Color, Data, HotKey, Lens, SysMods, WidgetExt, WindowDesc};
+use druid::{AppLauncher, Color, Data, Lens, WidgetExt, WindowDesc};
 use nonepad_editor_view::text_buffer::EditStack;
 use nonepad_editor_view::text_buffer::syntax::SYNTAXSET;
 use nonepad_editor_view::text_editor;
+use nonepad_editor_view::text_editor::editor_view::EditorKeyBindings;
 use nonepad_editor_view::theme::Theme;
 
 #[derive(Clone, Data, Lens)]
@@ -58,47 +59,5 @@ pub fn main() {
 }
 
 fn build_root_widget() -> impl Widget<SimpleState> {
-    let all_hotkey = HotKey::new(SysMods::Cmd, "a");
-    let cut_hotkey = HotKey::new(SysMods::Cmd, "x");
-    let copy_hotkey = HotKey::new(SysMods::Cmd, "c");
-    let paste_hotkey = HotKey::new(SysMods::Cmd, "v");
-    let undo_hotkey = HotKey::new(SysMods::Cmd, "z");
-    let redo_hotkey = HotKey::new(SysMods::CmdShift, "Z");
-    let redo2_hotkey = HotKey::new(SysMods::Cmd, "y");
-
-    text_editor::new(Some(Box::new(move |ctx, event, editor| {
-        match event {
-            Event::KeyDown(event) => {
-                if cut_hotkey.matches(event) {
-                    Application::global().clipboard().put_string(editor.selected_text());
-                    editor.delete();
-                    ctx.set_handled();
-                } else if copy_hotkey.matches(event) {
-                    Application::global().clipboard().put_string(editor.selected_text());
-                    ctx.set_handled();
-                } else if paste_hotkey.matches(event) {
-                    let clipboard = Application::global().clipboard();
-                    let supported_types = &[ClipboardFormat::TEXT];
-                    let best_available_type = clipboard.preferred_format(supported_types);
-                    if let Some(format) = best_available_type {
-                        let data = clipboard
-                            .get_format(format)
-                            .expect("I promise not to unwrap in production");
-                        editor.insert(String::from_utf8_lossy(&data).as_ref());
-                    }
-                    ctx.set_handled();
-                } else if undo_hotkey.matches(event) {
-                    editor.undo();
-                    ctx.set_handled();
-                } else if redo_hotkey.matches(event) || redo2_hotkey.matches(event) {
-                    editor.redo();
-                    ctx.set_handled();
-                } else if all_hotkey.matches(event) {
-                    editor.select_all();
-                    ctx.set_handled();
-                }
-            }
-            _ => ()
-        }
-    }))).lens(SimpleState::edit_stack)
+    text_editor::new(EditorKeyBindings::Cua).lens(SimpleState::edit_stack)
 }
