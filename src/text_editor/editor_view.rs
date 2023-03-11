@@ -154,7 +154,7 @@ pub struct EditorView {
 
     held_state: HeldState,
 
-    bgworker_channel_tx: Option<Sender<BackgroundWorkerMessage>>,
+    bgworker_channel_tx: Sender<BackgroundWorkerMessage>,
     highlighted_line: StyledLinesCache,
 
     event_handler: Option<EditorEventHandler>
@@ -198,7 +198,7 @@ const BACKGROUND_TX: Lazy<Sender<BackgroundWorkerMessage>> = Lazy::new(|| {
     thread::spawn(move || {
         let mut states = HashMap::new();
         loop {
-            match rx.try_recv() {
+            match rx.recv() {
                 Ok(message) => match message {
                     BackgroundWorkerMessage::Start(id, events, lines) => {
                         let mut state = State {
@@ -260,10 +260,8 @@ impl Widget<EditStack> for EditorView {
     fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle, editor: &EditStack, env: &Env) {
         match event {
             LifeCycle::WidgetAdded => {
-                self.bgworker_channel_tx = Some(BACKGROUND_TX.clone());
-
                 let start = BackgroundWorkerMessage::Start(self.owner_id, ctx.get_external_handle(), self.highlighted_line.clone());
-                self.bgworker_channel_tx.clone().expect("channel not present").send(start).expect("message send failed");
+                self.bgworker_channel_tx.send(start).expect("message send failed");
 
                 self.bg_color = env.get(crate::theme::EDITOR_BACKGROUND);
                 self.fg_color = env.get(crate::theme::EDITOR_FOREGROUND);
@@ -340,7 +338,7 @@ impl EditorView {
             owner_id,
             longest_line_len: 0.,
             held_state: HeldState::None,
-            bgworker_channel_tx: None,
+            bgworker_channel_tx: BACKGROUND_TX.clone(),
             highlighted_line: StyledLinesCache::new(),
             event_handler,
         };
@@ -395,27 +393,23 @@ impl EditorView {
     }
 
     fn update_highlighter(&self, data: &EditStack, line: usize) {
-        if let Some(tx) = self.bgworker_channel_tx.clone() {
-            match tx.send(BackgroundWorkerMessage::UpdateBuffer(self.owner_id,
-                data.file.syntax.clone(),
-                data.buffer.rope.clone(),
-                line,
-            )) {
-                Ok(()) => (),
-                Err(_e) => {
-                    tracing::error!("Error sending data to the background worker!");
-                }
+        match self.bgworker_channel_tx.send(BackgroundWorkerMessage::UpdateBuffer(self.owner_id,
+            data.file.syntax.clone(),
+            data.buffer.rope.clone(),
+            line,
+        )) {
+            Ok(()) => (),
+            Err(_e) => {
+                tracing::error!("Error sending data to the background worker!");
             }
         }
     }
 
     fn stop_background_worker(&self) {
-        if let Some(tx) = self.bgworker_channel_tx.clone() {
-            match tx.send(BackgroundWorkerMessage::Stop(self.owner_id)) {
-                Ok(()) => (),
-                Err(_e) => {
-                    tracing::error!("Error stopping the background worker!");
-                }
+        match self.bgworker_channel_tx.send(BackgroundWorkerMessage::Stop(self.owner_id)) {
+            Ok(()) => (),
+            Err(_e) => {
+                tracing::error!("Error stopping the background worker!");
             }
         }
     }
