@@ -779,8 +779,12 @@ impl EditorView {
     }
 
     fn visible_range(&self) -> Range<usize> {
-        (-self.delta_y / self.metrics.font_height).max(0.0) as usize
-            ..((-self.delta_y + self.size.height) / self.metrics.font_height).max(0.0) as usize + 1
+        if self.metrics.font_height > 0.0 {
+            (-self.delta_y / self.metrics.font_height).max(0.0) as usize
+                ..((-self.delta_y + self.size.height) / self.metrics.font_height).max(0.0) as usize + 1
+        } else {
+            0..1
+        }
     }
 
     fn add_bounded_range_selection<L: TextLayout>(
