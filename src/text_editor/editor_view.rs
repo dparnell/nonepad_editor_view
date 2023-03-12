@@ -723,9 +723,11 @@ impl EditorView {
             Event::Command(cmd) if cmd.is(HIGHLIGHT) => {
                 let d = *cmd.get_unchecked(HIGHLIGHT);
 
-                if self.visible_range().contains(&d.0)
-                    || self.visible_range().contains(&d.1)
-                    || (self.visible_range().start >= d.0 && self.visible_range().end <= d.1)
+                let vr = self.visible_range();
+
+                if vr.contains(&d.0)
+                    || vr.contains(&d.1)
+                    || (vr.start >= d.0 && vr.end <= d.1)
                 {
                     ctx.request_paint();
                 }
@@ -777,8 +779,8 @@ impl EditorView {
     }
 
     fn visible_range(&self) -> Range<usize> {
-        (-self.delta_y / self.metrics.font_height) as usize
-            ..((-self.delta_y + self.size.height) / self.metrics.font_height) as usize + 1
+        (-self.delta_y / self.metrics.font_height).max(0.0) as usize
+            ..((-self.delta_y + self.size.height) / self.metrics.font_height).max(0.0) as usize + 1
     }
 
     fn add_bounded_range_selection<L: TextLayout>(
