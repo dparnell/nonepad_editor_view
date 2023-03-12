@@ -38,6 +38,7 @@ pub const HIGHLIGHT: Selector<(usize, usize)> = Selector::new("nonepad.editor.hi
 pub const RELOAD_FROM_DISK: Selector<()> = Selector::new("nonepad.editor.reload_from_disk");
 pub const FILE_REMOVED: Selector<()> = Selector::new("nonepad.editor.file_removed");
 pub const SET_EDITOR_EVENT_HANDLER: Selector<Option<EditorEventHandler>> = Selector::new("nonepad.editor.event_handler");
+pub const FOCUS_EDITOR: Selector<WidgetId> = Selector::new("nonepad.editor.focus_editor");
 
 pub struct TextEditor {
     gutter_id: WidgetId,
@@ -110,6 +111,11 @@ impl Widget<EditStack> for TextEditor {
                 ctx.is_handled();
             }
 
+            Event::Command(cmd) if cmd.is(FOCUS_EDITOR) => {
+                let target = cmd.get_unchecked(FOCUS_EDITOR);
+                ctx.set_focus(target.clone());
+            }
+
             _ => self.inner.event(ctx, event, data, &new_env),
         }
     }
@@ -118,7 +124,10 @@ impl Widget<EditStack> for TextEditor {
         let mut new_env = env.clone();
         self.metrics.to_env(&mut new_env);
 
-        self.inner.lifecycle(ctx, event, data, &new_env)
+        match event {
+           LifeCycle::FocusChanged(true) => ctx.submit_command(druid::Command::new(FOCUS_EDITOR, self.editor_id, ctx.widget_id())),
+            _ => self.inner.lifecycle(ctx, event, data, &new_env)
+        }
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx, old_data: &EditStack, data: &EditStack, env: &Env) {
