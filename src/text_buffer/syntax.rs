@@ -1,16 +1,18 @@
-use once_cell::sync::Lazy;
 use ropey::Rope;
 use std::{
     ops::{Deref, Range},
     sync::{Arc, Mutex},
 };
+use lazy_static::lazy_static;
 use syntect::{
     highlighting::{HighlightState, Highlighter, RangedHighlightIterator, Style},
     parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet},
 };
 use crate::theme::THEME;
 
-pub static SYNTAXSET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
+lazy_static!{
+    pub static ref SYNTAXSET: SyntaxSet = SyntaxSet::load_defaults_newlines();
+}
 
 #[derive(Debug)]
 pub struct StateCache {

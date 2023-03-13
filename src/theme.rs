@@ -1,10 +1,9 @@
 use std::str::FromStr;
 
-use once_cell::sync::Lazy;
-
 #[rustfmt::skip]
 
 use druid::{Color, Env, Key};
+use lazy_static::lazy_static;
 use syntect::highlighting::{ScopeSelector, ScopeSelectors, StyleModifier, ThemeItem, ThemeSettings};
 use crate::vscode_theme::VSCodeTheme;
 
@@ -83,7 +82,9 @@ impl Default for Theme {
     }
 }
 
-pub static THEME: Lazy<Theme> = Lazy::new(Theme::default);
+lazy_static!{
+    pub static ref THEME: Theme = Theme::default();
+}
 
 pub const FOCUS_BORDER: Key<Color> = Key::new("focusBorder");
 pub const FOREGROUND: Key<Color> = Key::new("foreground");

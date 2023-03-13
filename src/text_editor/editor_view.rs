@@ -3,16 +3,18 @@ use std::ops::{Deref, DerefMut, Range};
 use std::path::{Path};
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
+use std::sync::Mutex;
 use std::thread;
 use druid::kurbo::{BezPath, Line, PathEl};
 use druid::piet::{PietText, Text, TextAttribute, TextLayout, TextLayoutBuilder};
 use druid::{Affine, Application, BoxConstraints, ClipboardFormat, Color, Data, Env, Event, EventCtx, ExtEventSink, FontStyle, HotKey, KeyEvent, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, Point, Rect, RenderContext, Size, SysMods, UpdateCtx, Widget, WidgetId};
-use once_cell::sync::Lazy;
+use lazy_static::lazy_static;
 use ropey::Rope;
 use syntect::parsing::SyntaxReference;
+use tracing::debug;
 use crate::text_buffer::{EditStack, position, rope_utils, SelectionLineRange};
 use crate::text_buffer::syntax::{StateCache, StyledLinesCache, SYNTAXSET};
-use crate::text_editor::{EDITOR_LEFT_PADDING, env, FILE_REMOVED, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE};
+use crate::text_editor::{EDITOR_LEFT_PADDING, env, FILE_REMOVED, FOCUS_EDITOR, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE};
 
 #[derive(Debug, Default)]
 struct SelectionPath {
@@ -121,10 +123,12 @@ impl HeldState {
     }
 }
 
+#[derive(Clone)]
 pub enum BackgroundWorkerMessage {
     Start(WidgetId, ExtEventSink, StyledLinesCache),
     Stop(WidgetId),
     UpdateBuffer(WidgetId, SyntaxReference, Rope, usize),
+    Focus(WidgetId)
 }
 
 pub type EditorEventHandler = Box<dyn FnMut(&mut EventCtx, &Event, &mut EditStack) -> ()>;
@@ -154,7 +158,6 @@ pub struct EditorView {
 
     held_state: HeldState,
 
-    bgworker_channel_tx: Sender<BackgroundWorkerMessage>,
     highlighted_line: StyledLinesCache,
 
     event_handler: Option<EditorEventHandler>
@@ -192,49 +195,66 @@ impl<'a> State <'a> {
     }
 }
 
-const BACKGROUND_TX: Lazy<Sender<BackgroundWorkerMessage>> = Lazy::new(|| {
-    let (tx, rx) = mpsc::channel::<BackgroundWorkerMessage>();
+lazy_static! {
+    static ref BACKGROUND_TX: Mutex<Sender<BackgroundWorkerMessage>> = {
+        let (tx, rx) = mpsc::channel::<BackgroundWorkerMessage>();
 
-    thread::spawn(move || {
-        let mut states = HashMap::new();
-        loop {
-            match rx.recv() {
-                Ok(message) => match message {
-                    BackgroundWorkerMessage::Start(id, events, lines) => {
-                        let mut state = State {
-                            events,
-                            syntax: SYNTAXSET.find_syntax_plain_text(),
-                            current_index: 0,
-                            chunk_len: 100,
-                            rope: Rope::new(),
-                            highlight_cache: StateCache::new(),
-                            highlighted_line: lines,
-                        };
-                        state.process_chunk(id);
-                        states.insert(id, state);
-                    }
-                    BackgroundWorkerMessage::Stop(id) => {
-                        states.remove(&id);
-                    },
-                    BackgroundWorkerMessage::UpdateBuffer(id, s, rope, start) => {
-                        if let Some(state) = states.get_mut(&id) {
-                            state.syntax = SYNTAXSET.find_syntax_by_name(&s.name).unwrap();
-                            state.rope = rope;
-                            state.current_index = start;
-                            state.chunk_len = 1000;
-
+        thread::spawn(move || {
+            debug!("Background worker started!");
+            let mut states = HashMap::new();
+            loop {
+                match rx.recv() {
+                    Ok(message) => match message {
+                        BackgroundWorkerMessage::Start(id, events, lines) => {
+                            debug!("added editor {:?}", id);
+                            let mut state = State {
+                                events,
+                                syntax: SYNTAXSET.find_syntax_plain_text(),
+                                current_index: 0,
+                                chunk_len: 100,
+                                rope: Rope::new(),
+                                highlight_cache: StateCache::new(),
+                                highlighted_line: lines,
+                            };
                             state.process_chunk(id);
+                            states.insert(id, state);
                         }
-                    }
-                },
-                _ => (),
+                        BackgroundWorkerMessage::Stop(id) => {
+                            debug!("removing editor {:?}", id);
+                            states.remove(&id);
+                        },
+                        BackgroundWorkerMessage::UpdateBuffer(id, s, rope, start) => {
+                            if let Some(state) = states.get_mut(&id) {
+                                state.syntax = SYNTAXSET.find_syntax_by_name(&s.name).unwrap();
+                                state.rope = rope;
+                                state.current_index = start;
+                                state.chunk_len = 1000;
+
+                                state.process_chunk(id);
+                            } else {
+                                debug!("editor state not found {id:?}");
+                            }
+                        }
+                        BackgroundWorkerMessage::Focus(id) => {
+                            debug!("got focus message for {id:?}");
+                            if let Some(state) = states.get_mut(&id) {
+                                debug!("Sending FOCUS_EDITOR command");
+                                state.events.submit_command(FOCUS_EDITOR, (), id).expect("submit failed");
+                            } else {
+                                debug!("editor state not found {id:?}");
+                            }
+                        }
+                    },
+                    _ => (),
+                }
+
             }
+        });
 
-        }
-    });
+        Mutex::new(tx)
+    };
+}
 
-    tx
-});
 
 
 impl Widget<EditStack> for EditorView {
@@ -261,7 +281,9 @@ impl Widget<EditStack> for EditorView {
         match event {
             LifeCycle::WidgetAdded => {
                 let start = BackgroundWorkerMessage::Start(self.owner_id, ctx.get_external_handle(), self.highlighted_line.clone());
-                self.bgworker_channel_tx.send(start).expect("message send failed");
+                if let Ok(tx) = BACKGROUND_TX.lock() {
+                    tx.send(start).expect("message send failed");
+                }
 
                 self.bg_color = env.get(crate::theme::EDITOR_BACKGROUND);
                 self.fg_color = env.get(crate::theme::EDITOR_FOREGROUND);
@@ -314,6 +336,13 @@ impl Widget<EditStack> for EditorView {
 }
 
 impl EditorView {
+
+    pub fn focus_editor(id: WidgetId) {
+        if let Ok(tx) = BACKGROUND_TX.lock() {
+            tx.send(BackgroundWorkerMessage::Focus(id)).unwrap();
+        }
+    }
+
     pub fn new(owner_id: WidgetId, key_bindings: EditorKeyBindings) -> Self {
 
         let event_handler = match key_bindings {
@@ -338,7 +367,6 @@ impl EditorView {
             owner_id,
             longest_line_len: 0.,
             held_state: HeldState::None,
-            bgworker_channel_tx: BACKGROUND_TX.clone(),
             highlighted_line: StyledLinesCache::new(),
             event_handler,
         };
@@ -393,23 +421,27 @@ impl EditorView {
     }
 
     fn update_highlighter(&self, data: &EditStack, line: usize) {
-        match self.bgworker_channel_tx.send(BackgroundWorkerMessage::UpdateBuffer(self.owner_id,
-            data.file.syntax.clone(),
-            data.buffer.rope.clone(),
-            line,
-        )) {
-            Ok(()) => (),
-            Err(_e) => {
-                tracing::error!("Error sending data to the background worker!");
+        if let Ok(tx) = BACKGROUND_TX.lock() {
+            match tx.send(BackgroundWorkerMessage::UpdateBuffer(self.owner_id,
+                                                                           data.file.syntax.clone(),
+                                                                           data.buffer.rope.clone(),
+                                                                           line,
+            )) {
+                Ok(()) => (),
+                Err(_e) => {
+                    tracing::error!("Error sending data to the background worker!");
+                }
             }
         }
     }
 
     fn stop_background_worker(&self) {
-        match self.bgworker_channel_tx.send(BackgroundWorkerMessage::Stop(self.owner_id)) {
-            Ok(()) => (),
-            Err(_e) => {
-                tracing::error!("Error stopping the background worker!");
+        if let Ok(tx) = BACKGROUND_TX.lock() {
+            match tx.send(BackgroundWorkerMessage::Stop(self.owner_id)) {
+                Ok(()) => (),
+                Err(_e) => {
+                    tracing::error!("Error stopping the background worker!");
+                }
             }
         }
     }
@@ -772,6 +804,12 @@ impl EditorView {
              */
             Event::Command(cmd) if cmd.is(FILE_REMOVED) => {
                 editor.set_dirty();
+                true
+            }
+
+            Event::Command(cmd) if cmd.is(FOCUS_EDITOR) => {
+                debug!("trying to focus editor view: {:?}", ctx.widget_id());
+                ctx.request_focus();
                 true
             }
             _ => false,

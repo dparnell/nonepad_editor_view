@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use super::buffer::Buffer;
 use super::file::TextFileInfo;
 use druid::Data;
-use once_cell::sync::Lazy;
+use lazy_static::lazy_static;
 
 #[derive(Debug, Clone, Default)]
 pub struct EditStack {
@@ -27,15 +27,17 @@ impl Data for EditStack {
     }
 }
 
-static AUTO_INSERT_CHARMAP: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
-    let mut m = HashMap::new();
-    m.insert("{", "{}");
-    m.insert("(", "()");
-    m.insert("<", "<>");
-    m.insert("[", "[]");
-    m.insert("\"", "\"\"");
-    m
-});
+lazy_static! {
+    static ref AUTO_INSERT_CHARMAP: HashMap<&'static str, &'static str> = {
+        let mut m = HashMap::new();
+        m.insert("{", "{}");
+        m.insert("(", "()");
+        m.insert("<", "<>");
+        m.insert("[", "[]");
+        m.insert("\"", "\"\"");
+        m
+    };
+}
 
 impl EditStack {
     pub fn new() -> Self {

@@ -1,5 +1,6 @@
 use druid::{BoxConstraints, Env, Event, EventCtx, FontWeight, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Selector, Size, UpdateCtx, Widget, WidgetExt, WidgetId};
 use druid::widget::Flex;
+use tracing::debug;
 use super::text_buffer::{EditStack};
 
 pub mod editor_view;
@@ -112,7 +113,8 @@ impl Widget<EditStack> for TextEditor {
             }
 
             Event::Command(cmd) if cmd.is(FOCUS_EDITOR) => {
-                ctx.set_focus(self.editor_id);
+                debug!("sending focus request to {:?}", self.editor_id);
+                EditorView::focus_editor(self.id);
             }
 
             _ => self.inner.event(ctx, event, data, &new_env),
@@ -124,7 +126,10 @@ impl Widget<EditStack> for TextEditor {
         self.metrics.to_env(&mut new_env);
 
         match event {
-           LifeCycle::FocusChanged(true) => ctx.submit_command(druid::Command::new(FOCUS_EDITOR, (), ctx.widget_id())),
+           LifeCycle::FocusChanged(true) => {
+               debug!("got focus: {:?}", ctx.widget_id());
+               ctx.submit_command(druid::Command::new(FOCUS_EDITOR, (), ctx.widget_id()));
+           },
             _ => self.inner.lifecycle(ctx, event, data, &new_env)
         }
     }
