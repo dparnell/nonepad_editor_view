@@ -11,10 +11,10 @@ use druid::{Affine, Application, BoxConstraints, ClipboardFormat, Color, Data, E
 use lazy_static::lazy_static;
 use ropey::Rope;
 use syntect::parsing::SyntaxReference;
-use tracing::debug;
+use tracing::{debug, error, trace};
 use crate::text_buffer::{EditStack, position, rope_utils, SelectionLineRange};
 use crate::text_buffer::syntax::{StateCache, StyledLinesCache, SYNTAXSET};
-use crate::text_editor::{EDITOR_LEFT_PADDING, env, FILE_REMOVED, FOCUS_EDITOR, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE};
+use crate::text_editor::{ChildWidget, EDITOR_LEFT_PADDING, env, FILE_REMOVED, FOCUS_EDITOR, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, WIDGET_ATTACHED};
 
 #[derive(Debug, Default)]
 struct SelectionPath {
@@ -125,7 +125,7 @@ impl HeldState {
 
 #[derive(Clone)]
 pub enum BackgroundWorkerMessage {
-    Start(WidgetId, ExtEventSink, StyledLinesCache),
+    Start(WidgetId, WidgetId, ExtEventSink, StyledLinesCache),
     Stop(WidgetId),
     UpdateBuffer(WidgetId, SyntaxReference, Rope, usize),
     Focus(WidgetId)
@@ -164,6 +164,7 @@ pub struct EditorView {
 }
 
 struct State<'a> {
+    pub editor_id: WidgetId,
     pub events: ExtEventSink,
     pub syntax: &'a SyntaxReference,
     pub current_index: usize,
@@ -205,9 +206,10 @@ lazy_static! {
             loop {
                 match rx.recv() {
                     Ok(message) => match message {
-                        BackgroundWorkerMessage::Start(id, events, lines) => {
-                            debug!("added editor {:?}", id);
+                        BackgroundWorkerMessage::Start(owner_id, editor_id, events, lines) => {
+                            trace!("added editor {:?} {:?}", owner_id, editor_id);
                             let mut state = State {
+                                editor_id,
                                 events,
                                 syntax: SYNTAXSET.find_syntax_plain_text(),
                                 current_index: 0,
@@ -216,11 +218,11 @@ lazy_static! {
                                 highlight_cache: StateCache::new(),
                                 highlighted_line: lines,
                             };
-                            state.process_chunk(id);
-                            states.insert(id, state);
+                            state.process_chunk(owner_id);
+                            states.insert(owner_id, state);
                         }
                         BackgroundWorkerMessage::Stop(id) => {
-                            debug!("removing editor {:?}", id);
+                            trace!("removing editor {:?}", id);
                             states.remove(&id);
                         },
                         BackgroundWorkerMessage::UpdateBuffer(id, s, rope, start) => {
@@ -232,16 +234,15 @@ lazy_static! {
 
                                 state.process_chunk(id);
                             } else {
-                                debug!("editor state not found {id:?}");
+                                error!("editor state not found {id:?}");
                             }
                         }
                         BackgroundWorkerMessage::Focus(id) => {
-                            debug!("got focus message for {id:?}");
                             if let Some(state) = states.get_mut(&id) {
-                                debug!("Sending FOCUS_EDITOR command");
-                                state.events.submit_command(FOCUS_EDITOR, (), id).expect("submit failed");
+                                trace!("Sending FOCUS_EDITOR command");
+                                state.events.submit_command(FOCUS_EDITOR, (), state.editor_id).expect("submit failed");
                             } else {
-                                debug!("editor state not found {id:?}");
+                                error!("editor state not found {id:?}");
                             }
                         }
                     },
@@ -280,7 +281,13 @@ impl Widget<EditStack> for EditorView {
     fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle, editor: &EditStack, env: &Env) {
         match event {
             LifeCycle::WidgetAdded => {
-                let start = BackgroundWorkerMessage::Start(self.owner_id, ctx.get_external_handle(), self.highlighted_line.clone());
+                ctx.submit_command(
+                    WIDGET_ATTACHED
+                        .with(ChildWidget::Editor(ctx.widget_id()))
+                        .to(self.owner_id),
+                );
+
+                let start = BackgroundWorkerMessage::Start(self.owner_id, ctx.widget_id(), ctx.get_external_handle(), self.highlighted_line.clone());
                 if let Ok(tx) = BACKGROUND_TX.lock() {
                     tx.send(start).expect("message send failed");
                 }
@@ -294,6 +301,10 @@ impl Widget<EditStack> for EditorView {
             }
             LifeCycle::BuildFocusChain => {
                 ctx.register_for_focus();
+            },
+            LifeCycle::FocusChanged(flag) => {
+                trace!("Editor {:?} focus changed: {flag:?}", ctx.widget_id());
+                ctx.request_paint();
             }
             _ => (),
         }
@@ -808,7 +819,7 @@ impl EditorView {
             }
 
             Event::Command(cmd) if cmd.is(FOCUS_EDITOR) => {
-                debug!("trying to focus editor view: {:?}", ctx.widget_id());
+                trace!("trying to focus editor view: {:?}", ctx.widget_id());
                 ctx.request_focus();
                 true
             }

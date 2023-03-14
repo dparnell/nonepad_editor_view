@@ -1,7 +1,7 @@
 use std::ops::Range;
 use druid::{BoxConstraints, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, Point, Rect, RenderContext, Size, UpdateCtx, Widget, WidgetId};
 use crate::text_buffer::EditStack;
-use crate::text_editor::{RESET_HELD_STATE, SCROLL_TO, SCROLLBAR_X_PADDING};
+use crate::text_editor::{ChildWidget, RESET_HELD_STATE, SCROLL_TO, SCROLLBAR_X_PADDING, WIDGET_ATTACHED};
 use crate::text_editor::editor_view::CommonMetrics;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -169,8 +169,21 @@ impl Widget<EditStack> for ScrollBar {
         }
     }
 
-    fn lifecycle(&mut self, _ctx: &mut LifeCycleCtx, _event: &LifeCycle, _data: &EditStack, _env: &Env) {
-        //todo!()
+    fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle, _data: &EditStack, _env: &Env) {
+        match event {
+            LifeCycle::WidgetAdded => {
+                let child = match self.direction {
+                    ScrollBarDirection::Horizontal => ChildWidget::HScroll(ctx.widget_id()),
+                    ScrollBarDirection::Vertical => ChildWidget::VScroll(ctx.widget_id())
+                };
+                ctx.submit_command(
+                    WIDGET_ATTACHED
+                        .with(child)
+                        .to(self.owner_id),
+                );
+            }
+            _ => ()
+        }
     }
 
     fn update(&mut self, _ctx: &mut UpdateCtx, _old_data: &EditStack, _data: &EditStack, _env: &Env) {

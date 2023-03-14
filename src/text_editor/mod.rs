@@ -1,6 +1,6 @@
 use druid::{BoxConstraints, Env, Event, EventCtx, FontWeight, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Selector, Size, UpdateCtx, Widget, WidgetExt, WidgetId};
 use druid::widget::Flex;
-use tracing::debug;
+use tracing::trace;
 use super::text_buffer::{EditStack};
 
 pub mod editor_view;
@@ -41,11 +41,19 @@ pub const FILE_REMOVED: Selector<()> = Selector::new("nonepad.editor.file_remove
 pub const SET_EDITOR_EVENT_HANDLER: Selector<Option<EditorEventHandler>> = Selector::new("nonepad.editor.event_handler");
 pub const FOCUS_EDITOR: Selector<()> = Selector::new("nonepad.editor.focus_editor");
 
+pub(crate) enum ChildWidget {
+    Editor(WidgetId),
+    Gutter(WidgetId),
+    VScroll(WidgetId),
+    HScroll(WidgetId)
+}
+pub(crate) const WIDGET_ATTACHED: Selector<ChildWidget> = Selector::new("nonepad.editor.widget_attached");
+
 pub struct TextEditor {
-    gutter_id: WidgetId,
-    editor_id: WidgetId,
-    vscroll_id: WidgetId,
-    hscroll_id: WidgetId,
+    gutter_id: Option<WidgetId>,
+    editor_id: Option<WidgetId>,
+    vscroll_id: Option<WidgetId>,
+    hscroll_id: Option<WidgetId>,
     id: WidgetId,
     inner: Flex<EditStack>,
     metrics: CommonMetrics,
@@ -61,30 +69,26 @@ impl TextEditor {
 
     fn new(key_bindings: EditorKeyBindings) -> Self {
         let id = WidgetId::next();
-        let gutter_id = WidgetId::next();
-        let editor_id = WidgetId::next();
-        let vscroll_id = WidgetId::next();
-        let hscroll_id = WidgetId::next();
 
         TextEditor {
-            gutter_id,
-            editor_id,
-            vscroll_id,
-            hscroll_id,
+            gutter_id: None,
+            editor_id: None,
+            vscroll_id: None,
+            hscroll_id: None,
             id,
             inner: Flex::row()
-                .with_child(Gutter::new(id).with_id(gutter_id))
+                .with_child(Gutter::new(id))
                 .with_flex_child(
                     Flex::column()
-                        .with_flex_child(EditorView::new(id, key_bindings).with_id(editor_id), 1.0)
-                        .with_child(ScrollBar::new(id, ScrollBarDirection::Horizontal).with_id(hscroll_id)),
+                        .with_flex_child(EditorView::new(id, key_bindings), 1.0)
+                        .with_child(ScrollBar::new(id, ScrollBarDirection::Horizontal)),
                     1.0,
                 )
                 .must_fill_main_axis(true)
                 .with_child(
                     Flex::column()
                         .with_flex_child(
-                            ScrollBar::new(id, ScrollBarDirection::Vertical).with_id(vscroll_id),
+                            ScrollBar::new(id, ScrollBarDirection::Vertical),
                             1.0,
                         )
                         .with_child(ScrollBarSpacer::default()),
@@ -99,21 +103,40 @@ impl Widget<EditStack> for TextEditor {
         let mut new_env = env.clone();
         self.metrics.to_env(&mut new_env);
         match event {
+            Event::Command(cmd) if cmd.is(WIDGET_ATTACHED) => {
+                let child = cmd.get_unchecked(WIDGET_ATTACHED);
+
+                match child {
+                    ChildWidget::Editor(id) => self.editor_id = Some(id.clone()),
+                    ChildWidget::Gutter(id) => self.gutter_id = Some(id.clone()),
+                    ChildWidget::VScroll(id) => self.vscroll_id = Some(id.clone()),
+                    ChildWidget::HScroll(id) => self.hscroll_id = Some(id.clone())
+                }
+            }
+
             Event::Command(cmd) if cmd.is(SCROLL_TO) => {
                 // clamp to size
                 let d = *cmd.get_unchecked(SCROLL_TO);
                 let x = d.0.map(|x| x.clamp(-self.text_width(&data), 0.0));
                 let y = d.1.map(|y| y.clamp(-self.text_height(&data), 0.0));
                 //dbg!(x,y);
-                ctx.submit_command(SCROLL_TO.with((x, y)).to(self.editor_id));
-                ctx.submit_command(SCROLL_TO.with((x, y)).to(self.gutter_id));
-                ctx.submit_command(SCROLL_TO.with((x, y)).to(self.vscroll_id));
-                ctx.submit_command(SCROLL_TO.with((x, y)).to(self.hscroll_id));
+                if let Some(id) = self.editor_id {
+                    ctx.submit_command(SCROLL_TO.with((x, y)).to(id));
+                }
+                if let Some(id) = self.gutter_id {
+                    ctx.submit_command(SCROLL_TO.with((x, y)).to(id));
+                }
+                if let Some(id) = self.vscroll_id {
+                    ctx.submit_command(SCROLL_TO.with((x, y)).to(id));
+                }
+                if let Some(id) = self.hscroll_id {
+                    ctx.submit_command(SCROLL_TO.with((x, y)).to(id));
+                }
                 ctx.is_handled();
             }
 
             Event::Command(cmd) if cmd.is(FOCUS_EDITOR) => {
-                debug!("sending focus request to {:?}", self.editor_id);
+                trace!("sending focus request to {:?}", self.editor_id);
                 EditorView::focus_editor(self.id);
             }
 
@@ -127,7 +150,7 @@ impl Widget<EditStack> for TextEditor {
 
         match event {
            LifeCycle::FocusChanged(true) => {
-               debug!("got focus: {:?}", ctx.widget_id());
+               trace!("got focus: {:?}", ctx.widget_id());
                ctx.submit_command(druid::Command::new(FOCUS_EDITOR, (), ctx.widget_id()));
            },
             _ => self.inner.lifecycle(ctx, event, data, &new_env)

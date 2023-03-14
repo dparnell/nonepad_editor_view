@@ -1,6 +1,6 @@
 use druid::{BoxConstraints, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, RenderContext, Size, UpdateCtx, Widget, WidgetId};
 use crate::text_buffer::EditStack;
-use crate::text_editor::{FONT_NAME, FONT_WEIGTH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE};
+use crate::text_editor::{ChildWidget, FONT_NAME, FONT_WEIGTH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, WIDGET_ATTACHED};
 use std::ops::Range;
 use druid::kurbo::Line;
 use druid::piet::{Text, TextAttribute, TextLayoutBuilder};
@@ -64,7 +64,18 @@ impl Widget<EditStack> for Gutter {
         }
     }
 
-    fn lifecycle(&mut self, _ctx: &mut LifeCycleCtx, _event: &LifeCycle, _data: &EditStack, _env: &Env) {}
+    fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle, _data: &EditStack, _env: &Env) {
+        match event {
+            LifeCycle::WidgetAdded => {
+                ctx.submit_command(
+                    WIDGET_ATTACHED
+                        .with(ChildWidget::Gutter(ctx.widget_id()))
+                        .to(self.owner_id),
+                );
+            }
+            _ => ()
+        }
+    }
 
     fn update(&mut self, ctx: &mut UpdateCtx, old_data: &EditStack, data: &EditStack, _env: &Env) {
         if old_data.len_lines() != data.len_lines() {
