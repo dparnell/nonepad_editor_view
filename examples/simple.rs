@@ -7,7 +7,7 @@ use nonepad_editor_view::text_buffer::EditStack;
 use nonepad_editor_view::text_buffer::syntax::SYNTAXSET;
 use nonepad_editor_view::text_editor;
 use nonepad_editor_view::text_editor::editor_view::EditorKeyBindings;
-use nonepad_editor_view::text_editor::palette_manager::{IsDirty, PaletteData, PaletteManager};
+use nonepad_editor_view::text_editor::palette_manager::{IsDirty, PaletteManager};
 use nonepad_editor_view::theme::Theme;
 
 #[derive(Clone, Data, Lens)]
@@ -24,8 +24,6 @@ impl IsDirty for SimpleState {
         self.edit_stack.reset_dirty()
     }
 }
-
-impl PaletteData for SimpleState {}
 
 pub fn main() {
     #[cfg(debug_assertions)]

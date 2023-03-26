@@ -1,5 +1,7 @@
-use druid::{BoxConstraints, Data, Lens, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Size, UpdateCtx, Widget, WidgetPod, WidgetId};
-use crate::text_editor::palette_view::{CLOSE_PALETTE, DialogResult, PaletteBuilder, PaletteCommandType, PaletteView, PaletteViewState, SHOW_DIALOG_FOR_EDITOR, SHOW_PALETTE_FOR_EDITOR};
+use std::rc::Rc;
+use druid::{BoxConstraints, Data, Lens, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Size, UpdateCtx, Widget, WidgetPod, WidgetId, Selector};
+use druid::im::Vector;
+use crate::text_editor::palette_view::{CLOSE_PALETTE, DialogResult, Item, Palette, PaletteBuilder, PaletteCommandType, PaletteResult, PaletteView, PaletteViewState, SHOW_DIALOG_FOR_EDITOR, SHOW_PALETTE_FOR_EDITOR, ShowPalette};
 use crate::text_editor::RESET_HELD_STATE;
 
 pub trait IsDirty {
@@ -7,33 +9,36 @@ pub trait IsDirty {
     fn reset_dirty(&mut self);
 }
 
-pub trait PaletteData: druid::Data + IsDirty {}
-
-pub struct PaletteManager<State: PaletteData> {
-    inner: WidgetPod<State, Box<dyn Widget<State>>>,
+pub struct PaletteManager<State: druid::Data + IsDirty> {
+    inner: Box<WidgetPod<State, Box<dyn Widget<State>>>>,
     palette: WidgetPod<PaletteViewState, PaletteView>,
 }
 
-#[derive(Clone, Data, Lens)]
-pub struct PaletteManagerState<State: PaletteData> {
+#[derive(Clone, Lens)]
+pub struct PaletteManagerState<State: druid::Data + IsDirty> {
     in_palette: bool,
-    #[data(ignore)]
     editor: Option<WidgetId>,
-    inner_state: State,
+    inner_state: Box<State>,
     palette_state: PaletteViewState
 }
 
-impl<State: PaletteData> PaletteManager<State> {
+impl<State: druid::Data + IsDirty> Data for PaletteManagerState<State> {
+    fn same(&self, other: &Self) -> bool {
+        other.in_palette == self.in_palette && other.palette_state.same(&self.palette_state) && other.inner_state.same(&self.inner_state)
+    }
+}
+
+impl<State: druid::Data + IsDirty> PaletteManager<State> {
     pub fn build(inner: Box<dyn Widget<State>>, state: State) -> (Self, PaletteManagerState<State>){
         let widget = PaletteManager {
-            inner: WidgetPod::new(inner),
+            inner: Box::new(WidgetPod::new(inner)),
             palette: WidgetPod::new(PaletteView::new())
         };
 
         let widget_state = PaletteManagerState {
             in_palette: false,
             editor: None,
-            inner_state: state,
+            inner_state: Box::new(state),
             palette_state: PaletteViewState::default()
         };
 
@@ -41,7 +46,7 @@ impl<State: PaletteData> PaletteManager<State> {
     }
 }
 
-impl<State: PaletteData> Widget<PaletteManagerState<State>> for PaletteManager<State> {
+impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for PaletteManager<State> {
     fn event(&mut self, ctx: &mut EventCtx, event: &Event, data: &mut PaletteManagerState<State>, env: &Env) {
         if ctx.is_handled() {
             return;
@@ -59,7 +64,7 @@ impl<State: PaletteData> Widget<PaletteManagerState<State>> for PaletteManager<S
                     &mut data.palette_state,
                     title,
                     list.clone(),
-                    action.map(|f| PaletteCommandType::DialogEditor(f)),
+                    action.map(|f| PaletteCommandType::EditorDialog(f)),
                 );
                 self.palette.widget_mut().take_focus(ctx);
                 return;
@@ -74,7 +79,37 @@ impl<State: PaletteData> Widget<PaletteManagerState<State>> for PaletteManager<S
                     &mut data.palette_state,
                     title,
                     list.clone(),
-                    action.map(|f| PaletteCommandType::Editor(f)),
+                    action.map(|f| PaletteCommandType::EditorPalette(f)),
+                );
+                self.palette.widget_mut().take_focus(ctx);
+                return;
+            },
+
+            druid::Event::Command(cmd) if cmd.is(SHOW_DIALOG_FOR_WINDOW) => {
+                data.in_palette = true;
+                ctx.request_layout();
+                let (widget, title, list, action) = cmd.get_unchecked(SHOW_DIALOG_FOR_WINDOW).clone();
+                data.editor = Some(widget.clone());
+                self.palette.widget_mut().init(
+                    &mut data.palette_state,
+                    title,
+                    list.clone(),
+                    action.map(|f| PaletteCommandType::WindowDialog(f)),
+                );
+                self.palette.widget_mut().take_focus(ctx);
+                return;
+            },
+
+            druid::Event::Command(cmd) if cmd.is(SHOW_PALETTE_FOR_WINDOW) => {
+                data.in_palette = true;
+                ctx.request_layout();
+                let (widget, title, list, action) = cmd.get_unchecked(SHOW_PALETTE_FOR_WINDOW).clone();
+                data.editor = Some(widget.clone());
+                self.palette.widget_mut().init(
+                    &mut data.palette_state,
+                    title,
+                    list.clone(),
+                    action.map(|f| PaletteCommandType::WindowPalette(f)),
                 );
                 self.palette.widget_mut().take_focus(ctx);
                 return;
@@ -91,7 +126,7 @@ impl<State: PaletteData> Widget<PaletteManagerState<State>> for PaletteManager<S
                 ctx.request_paint();
                 return;
             },
-/*
+
             druid::Event::WindowCloseRequested => {
                 if data.inner_state.is_dirty() {
                     ctx.set_handled();
@@ -106,7 +141,7 @@ impl<State: PaletteData> Widget<PaletteManagerState<State>> for PaletteManager<S
                         .show(ctx);
                 }
             }
-*/
+
             _ => ()
         }
 
@@ -154,4 +189,52 @@ impl<State: PaletteData> Widget<PaletteManagerState<State>> for PaletteManager<S
     }
 }
 
-// impl PaletteBuilder<PaletteManagerState<dyn PaletteData>> for PaletteManager<dyn PaletteData> {}
+impl<State: druid::Data + IsDirty> PaletteBuilder<PaletteManagerState<State>> for PaletteManager<State> {}
+
+impl<State: druid::Data + IsDirty> Palette<PaletteResult, PaletteManager<State>, PaletteManagerState<State>> {
+    pub fn show(self, ctx: &mut EventCtx) {
+        ctx.show_palette(self.title.unwrap_or_default(), self.items, self.action);
+    }
+}
+
+impl<State: druid::Data + IsDirty> Palette<DialogResult, PaletteManager<State>, PaletteManagerState<State>> {
+    pub fn show(self, ctx: &mut EventCtx) {
+        ctx.show_palette(self.title.unwrap_or_default(), self.items, self.action);
+    }
+}
+
+pub(super) const SHOW_DIALOG_FOR_WINDOW: Selector<(
+    WidgetId,
+    String,
+    Option<Vector<Item>>,
+    Option<Rc<dyn Fn(DialogResult, &mut EventCtx)>>,
+)> = Selector::new("nonepad.dialog.show_for_window");
+
+pub(super) const SHOW_PALETTE_FOR_WINDOW: Selector<(
+    WidgetId,
+    String,
+    Option<Vector<Item>>,
+    Option<Rc<dyn Fn(PaletteResult, &mut EventCtx)>>,
+)> = Selector::new("nonepad.dialog.show_for_window");
+
+impl<'a, 'b, 'c> ShowPalette<DialogResult> for EventCtx<'b, 'c> {
+    fn show_palette(
+        &mut self,
+        title: String,
+        items: Option<Vector<Item>>,
+        callback: Option<Rc<dyn Fn(DialogResult, &mut EventCtx)>>,
+    ) {
+        self.submit_command(SHOW_DIALOG_FOR_WINDOW.with((self.widget_id(), title, items, callback)));
+    }
+}
+
+impl<'a, 'b, 'c> ShowPalette<PaletteResult> for EventCtx<'b, 'c> {
+    fn show_palette(
+        &mut self,
+        title: String,
+        items: Option<Vector<Item>>,
+        callback: Option<Rc<dyn Fn(PaletteResult, &mut EventCtx)>>,
+    ) {
+        self.submit_command(SHOW_PALETTE_FOR_WINDOW.with((self.widget_id(), title, items, callback)));
+    }
+}
