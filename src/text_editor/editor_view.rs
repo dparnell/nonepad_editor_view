@@ -387,7 +387,7 @@ impl EditorView {
     }
 
     fn make_cua_key_bindings() -> EditorEventHandler {
-        let all_hotkey = HotKey::new(SysMods::Cmd, "a");
+        let select_all_hotkey = HotKey::new(SysMods::Cmd, "a");
         let cut_hotkey = HotKey::new(SysMods::Cmd, "x");
         let copy_hotkey = HotKey::new(SysMods::Cmd, "c");
         let paste_hotkey = HotKey::new(SysMods::Cmd, "v");
@@ -410,10 +410,9 @@ impl EditorView {
                         let supported_types = &[ClipboardFormat::TEXT];
                         let best_available_type = clipboard.preferred_format(supported_types);
                         if let Some(format) = best_available_type {
-                            let data = clipboard
-                                .get_format(format)
-                                .expect("I promise not to unwrap in production");
-                            editor.insert(String::from_utf8_lossy(&data).as_ref());
+                            if  let Some(data) = clipboard.get_format(format) {
+                                editor.insert(String::from_utf8_lossy(&data).as_ref());
+                            }
                         }
                         ctx.set_handled();
                     } else if undo_hotkey.matches(event) {
@@ -422,7 +421,7 @@ impl EditorView {
                     } else if redo_hotkey.matches(event) || redo2_hotkey.matches(event) {
                         editor.redo();
                         ctx.set_handled();
-                    } else if all_hotkey.matches(event) {
+                    } else if select_all_hotkey.matches(event) {
                         editor.select_all();
                         ctx.set_handled();
                     }
