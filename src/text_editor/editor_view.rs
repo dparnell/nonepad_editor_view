@@ -14,7 +14,8 @@ use syntect::parsing::SyntaxReference;
 use tracing::{debug, error, trace};
 use crate::text_buffer::{EditStack, position, rope_utils, SelectionLineRange};
 use crate::text_buffer::syntax::{StateCache, StyledLinesCache, SYNTAXSET};
-use crate::text_editor::{ChildWidget, EDITOR_LEFT_PADDING, env, FILE_REMOVED, FOCUS_EDITOR, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, WIDGET_ATTACHED};
+use crate::text_editor::{ChildWidget, EDITOR_LEFT_PADDING, env, FILE_REMOVED, FOCUS_EDITOR, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, RELOAD_FROM_DISK, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, WIDGET_ATTACHED};
+use crate::text_editor::palette_view::{DialogResult, PaletteBuilder};
 
 #[derive(Debug, Default)]
 struct SelectionPath {
@@ -702,37 +703,38 @@ impl EditorView {
                 self.stop_background_worker();
                 true
             }
-            /*
-                        Event::Command(cmd) if cmd.is(druid::commands::SAVE_FILE_AS) => {
-                            let file_info = cmd.get_unchecked(druid::commands::SAVE_FILE_AS).clone();
-                            if file_info.path().exists() {
-                                self.dialog()
-                                    //.items(item!["Yes", "No"])
-                                    .title("File exists! Overwrite?")
-                                    .on_select(move |result, ctx, text_editor, data| {
-                                        if result == DialogResult::Ok {
-                                            if let Err(e) = text_editor.save_as(data, file_info.path()) {
-                                                text_editor.alert(&format!("Error writing file: {}", e)).show(ctx);
-                                            }
-                                        };
-                                    })
-                                    .show(ctx);
-                                true
-                            } else {
-                                if let Err(e) = self.save_as(editor, file_info.path()) {
-                                    self.alert(&format!("Error writing file: {}", e)).show(ctx);
+
+            Event::Command(cmd) if cmd.is(druid::commands::SAVE_FILE_AS) => {
+                let file_info = cmd.get_unchecked(druid::commands::SAVE_FILE_AS).clone();
+                if file_info.path().exists() {
+                    self.dialog()
+                        //.items(item!["Yes", "No"])
+                        .title("File exists! Overwrite?")
+                        .on_select(move |result, ctx, text_editor, data| {
+                            if result == DialogResult::Ok {
+                                if let Err(e) = text_editor.save_as(data, file_info.path()) {
+                                    text_editor.alert(&format!("Error writing file: {}", e)).show(ctx);
                                 }
-                                true
-                            }
-                        }
-                        Event::Command(cmd) if cmd.is(druid::commands::SAVE_FILE) => {
-                            if let Err(e) = self.save(editor) {
-                                self.alert(&format!("Error writing file: {}", e)).show(ctx);
-                            }
-                            true
-                        }
-             */
-            /*
+                            };
+                        })
+                        .show(ctx);
+                    true
+                } else {
+                    if let Err(e) = self.save_as(editor, file_info.path()) {
+                        self.alert(&format!("Error writing file: {}", e)).show(ctx);
+                    }
+                    true
+                }
+            }
+
+            Event::Command(cmd) if cmd.is(druid::commands::SAVE_FILE) => {
+                if let Err(e) = self.save(editor) {
+                    self.alert(&format!("Error writing file: {}", e)).show(ctx);
+                }
+                true
+            }
+
+
             Event::Command(cmd) if cmd.is(druid::commands::OPEN_FILE) => {
                 if let Some(file_info) = cmd.get(druid::commands::OPEN_FILE) {
                     if let Err(_) = self.open(editor, file_info.path()) {
@@ -741,7 +743,7 @@ impl EditorView {
                 }
                 true
             }
-             */
+
             Event::Command(cmd) if cmd.is(REQUEST_NEXT_SEARCH) => {
                 if let Some(data) = cmd.get(REQUEST_NEXT_SEARCH) {
                     editor.search_next(data);
@@ -776,7 +778,7 @@ impl EditorView {
                 }
                 true
             }
-            /*
+
             Event::Command(cmd) if cmd.is(RELOAD_FROM_DISK) => {
                 if editor.is_dirty() {
                     ctx.set_handled();
@@ -812,7 +814,7 @@ impl EditorView {
                 true
             }
 
-             */
+
             Event::Command(cmd) if cmd.is(FILE_REMOVED) => {
                 editor.set_dirty();
                 true

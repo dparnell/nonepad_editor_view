@@ -5,6 +5,8 @@ use super::text_buffer::{EditStack};
 
 pub mod editor_view;
 pub mod gutter;
+pub mod palette_manager;
+pub mod palette_view;
 pub mod scroll_bar;
 
 use crate::text_editor::editor_view::{CommonMetrics, EditorEventHandler, EditorKeyBindings, EditorView};

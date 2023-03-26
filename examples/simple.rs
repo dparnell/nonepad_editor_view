@@ -7,12 +7,25 @@ use nonepad_editor_view::text_buffer::EditStack;
 use nonepad_editor_view::text_buffer::syntax::SYNTAXSET;
 use nonepad_editor_view::text_editor;
 use nonepad_editor_view::text_editor::editor_view::EditorKeyBindings;
+use nonepad_editor_view::text_editor::palette_manager::{IsDirty, PaletteData, PaletteManager};
 use nonepad_editor_view::theme::Theme;
 
 #[derive(Clone, Data, Lens)]
 struct SimpleState {
-    edit_stack: EditStack
+    edit_stack: EditStack,
 }
+
+impl IsDirty for SimpleState {
+    fn is_dirty(&self) -> bool {
+        self.edit_stack.is_dirty()
+    }
+
+    fn reset_dirty(&mut self) {
+        self.edit_stack.reset_dirty()
+    }
+}
+
+impl PaletteData for SimpleState {}
 
 pub fn main() {
     #[cfg(debug_assertions)]
@@ -25,15 +38,16 @@ pub fn main() {
 
     // create the initial app state
     let mut initial_state: SimpleState = SimpleState {
-        edit_stack: EditStack::new()
+        edit_stack: EditStack::new(),
     };
 
     initial_state.edit_stack.insert("-- enter some SQL text here\nselect * from mytable where id=1234 or name in ('Molly', 'Marcus')\n\n");
 
     initial_state.edit_stack.file.syntax = SYNTAXSET.find_syntax_by_name("SQL").expect("SQL Syntax not found");
 
+    let (root, state) = PaletteManager::build(build_root_widget().boxed(), initial_state);
     // describe the main window
-    let main_window = WindowDesc::new(build_root_widget())
+    let main_window = WindowDesc::new(root)
         .title("Hello Edit")
         .window_size((800.0, 600.0));
 
@@ -54,7 +68,7 @@ pub fn main() {
 
             theme.to_env(env);
         })
-        .launch(initial_state)
+        .launch(state)
         .expect("Failed to launch application");
 }
 
