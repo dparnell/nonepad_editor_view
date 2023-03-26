@@ -136,6 +136,7 @@ impl PaletteView {
         self.action = action;
         data.visible_list = list.map(|l| l.iter().enumerate().map(|i| (i.0, i.1.clone())).collect())
     }
+
     pub fn take_focus(&self, ctx: &mut EventCtx) {
         ctx.set_focus(self.textbox_id);
     }
@@ -583,10 +584,19 @@ impl<R, W, D> Palette<R, W, D> {
         self.title = Some(title.to_owned());
         self
     }
+
     pub fn on_select(mut self, action: impl Fn(R, &mut EventCtx, &mut W, &mut D) + 'static) -> Self {
         self.editor_action = Some(Rc::new(action));
+        self.action = None;
         self
     }
+
+    pub fn on_action(mut self, action: impl Fn(R, &mut EventCtx) + 'static) -> Self {
+        self.action = Some(Rc::new(action));
+        self.editor_action = None;
+        self
+    }
+
     pub fn items(mut self, items: Vector<Item>) -> Self {
         self.items = Some(items);
         self

@@ -1,13 +1,16 @@
 use std::rc::Rc;
-use druid::{BoxConstraints, Data, Lens, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Size, UpdateCtx, Widget, WidgetPod, WidgetId, Selector};
+use druid::{BoxConstraints, Data, Lens, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Size, UpdateCtx, Widget, WidgetPod, WidgetId, Selector, Command};
 use druid::im::Vector;
-use crate::text_editor::palette_view::{CLOSE_PALETTE, DialogResult, Item, Palette, PaletteBuilder, PaletteCommandType, PaletteResult, PaletteView, PaletteViewState, SHOW_DIALOG_FOR_EDITOR, SHOW_PALETTE_FOR_EDITOR, ShowPalette};
+use crate::text_editor::palette_view::{CLOSE_PALETTE, DialogResult, Item, Palette, PALETTE_CALLBACK, PaletteBuilder, PaletteCommandType, PaletteResult, PaletteView, PaletteViewState, SHOW_DIALOG_FOR_EDITOR, SHOW_PALETTE_FOR_EDITOR, ShowPalette};
 use crate::text_editor::RESET_HELD_STATE;
 
 pub trait IsDirty {
     fn is_dirty(&self) -> bool;
     fn reset_dirty(&mut self);
 }
+
+const RESET_DIRTY: Selector<()> = Selector::new("nonepad.dialog.reset_dirty");
+const FOCUS_PALETTE: Selector<()> = Selector::new("nonepad.palette.focus");
 
 pub struct PaletteManager<State: druid::Data + IsDirty> {
     inner: Box<WidgetPod<State, Box<dyn Widget<State>>>>,
@@ -55,6 +58,32 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
         match event {
             druid::Event::MouseUp(_) => ctx.submit_command(RESET_HELD_STATE),
 
+            druid::Event::Command(cmd) if cmd.is(PALETTE_CALLBACK) => {
+                let item = cmd.get_unchecked(PALETTE_CALLBACK);
+                match &item.1 {
+                    PaletteCommandType::WindowPalette(action) => {
+                        (action)(item.0.clone(), ctx);
+                        ctx.set_handled();
+                        return;
+                    }
+                    PaletteCommandType::WindowDialog(action) => {
+                        let dialog_result = if item.0.index == 0 {
+                            DialogResult::Ok
+                        } else {
+                            DialogResult::Cancel
+                        };
+                        (action)(dialog_result, ctx);
+                        ctx.set_handled();
+                        return;
+                    }
+                    _ => (),
+                }
+            }
+
+            druid::Event::Command(cmd) if cmd.is(FOCUS_PALETTE) => {
+                self.palette.widget_mut().take_focus(ctx);
+            }
+
             druid::Event::Command(cmd) if cmd.is(SHOW_DIALOG_FOR_EDITOR) => {
                 data.in_palette = true;
                 ctx.request_layout();
@@ -66,7 +95,8 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                     list.clone(),
                     action.map(|f| PaletteCommandType::EditorDialog(f)),
                 );
-                self.palette.widget_mut().take_focus(ctx);
+
+                ctx.submit_command(Command::from(FOCUS_PALETTE));
                 return;
             },
 
@@ -81,7 +111,8 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                     list.clone(),
                     action.map(|f| PaletteCommandType::EditorPalette(f)),
                 );
-                self.palette.widget_mut().take_focus(ctx);
+
+                ctx.submit_command(Command::from(FOCUS_PALETTE));
                 return;
             },
 
@@ -96,7 +127,8 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                     list.clone(),
                     action.map(|f| PaletteCommandType::WindowDialog(f)),
                 );
-                self.palette.widget_mut().take_focus(ctx);
+
+                ctx.submit_command(Command::from(FOCUS_PALETTE));
                 return;
             },
 
@@ -111,7 +143,8 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                     list.clone(),
                     action.map(|f| PaletteCommandType::WindowPalette(f)),
                 );
-                self.palette.widget_mut().take_focus(ctx);
+
+                ctx.submit_command(Command::from(FOCUS_PALETTE));
                 return;
             },
 
@@ -127,14 +160,19 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                 return;
             },
 
+            druid::Event::Command(cmd) if cmd.is(RESET_DIRTY) => {
+                data.inner_state.reset_dirty();
+                return;
+            },
+
             druid::Event::WindowCloseRequested => {
                 if data.inner_state.is_dirty() {
                     ctx.set_handled();
                     self.dialog()
                         .title("Discard unsaved change?")
-                        .on_select(|result, ctx, _, data| {
+                        .on_action(|result, ctx| {
                             if result == DialogResult::Ok {
-                                data.inner_state.reset_dirty();
+                                ctx.submit_command(Command::from(RESET_DIRTY));
                                 ctx.submit_command(druid::commands::CLOSE_WINDOW);
                             }
                         })
@@ -161,7 +199,8 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                 self.palette.lifecycle(ctx, event, &data.palette_state, env);
             }
             self.inner.lifecycle(ctx, event, &data.inner_state, env);
-        }    }
+        }
+    }
 
     fn update(&mut self, ctx: &mut UpdateCtx, old_data: &PaletteManagerState<State>, data: &PaletteManagerState<State>, env: &Env) {
         if old_data.in_palette != data.in_palette {

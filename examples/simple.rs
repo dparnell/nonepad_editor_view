@@ -26,6 +26,7 @@ impl IsDirty for SimpleState {
 }
 
 pub fn main() {
+    /*
     #[cfg(debug_assertions)]
     {
         let subscriber = tracing_subscriber::FmtSubscriber::builder().with_max_level(tracing::Level::TRACE).finish();
@@ -33,7 +34,7 @@ pub fn main() {
         tracing::subscriber::set_global_default(subscriber)
             .expect("setting default subscriber failed");
     }
-
+*/
     // create the initial app state
     let mut initial_state: SimpleState = SimpleState {
         edit_stack: EditStack::new(),
