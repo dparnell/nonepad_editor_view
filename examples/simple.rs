@@ -45,7 +45,8 @@ pub fn main() {
 
     initial_state.edit_stack.file.syntax = SYNTAXSET.find_syntax_by_name("SQL").expect("SQL Syntax not found");
 
-    let (root, state) = PaletteManager::build(build_root_widget().boxed(), initial_state);
+    let (root, state) = PaletteManager::build(build_root_widget().boxed(), initial_state, None);
+
     // describe the main window
     let main_window = WindowDesc::new(root)
         .title("Hello Edit")

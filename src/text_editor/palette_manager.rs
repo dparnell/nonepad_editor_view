@@ -22,6 +22,7 @@ pub struct PaletteManagerState<State: druid::Data + IsDirty> {
     in_palette: bool,
     editor: Option<WidgetId>,
     inner_state: Box<State>,
+    event_callback: Option<Rc<dyn Fn(&mut EventCtx, &Event, &mut State)>>,
     palette_state: PaletteViewState
 }
 
@@ -32,7 +33,7 @@ impl<State: druid::Data + IsDirty> Data for PaletteManagerState<State> {
 }
 
 impl<State: druid::Data + IsDirty> PaletteManager<State> {
-    pub fn build(inner: Box<dyn Widget<State>>, state: State) -> (Self, PaletteManagerState<State>){
+    pub fn build(inner: Box<dyn Widget<State>>, state: State, event_callback: Option<Rc<dyn Fn(&mut EventCtx, &Event, &mut State)>>) -> (Self, PaletteManagerState<State>){
         let widget = PaletteManager {
             inner: Box::new(WidgetPod::new(inner)),
             palette: WidgetPod::new(PaletteView::new())
@@ -42,6 +43,7 @@ impl<State: druid::Data + IsDirty> PaletteManager<State> {
             in_palette: false,
             editor: None,
             inner_state: Box::new(state),
+            event_callback,
             palette_state: PaletteViewState::default()
         };
 
@@ -51,6 +53,9 @@ impl<State: druid::Data + IsDirty> PaletteManager<State> {
 
 impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for PaletteManager<State> {
     fn event(&mut self, ctx: &mut EventCtx, event: &Event, data: &mut PaletteManagerState<State>, env: &Env) {
+        if let Some(callback) = &data.event_callback {
+            (callback)(ctx, event, &mut *data.inner_state);
+        }
         if ctx.is_handled() {
             return;
         }
