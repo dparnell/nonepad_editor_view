@@ -9,7 +9,6 @@ pub trait IsDirty {
     fn reset_dirty(&mut self);
 }
 
-const RESET_DIRTY: Selector<()> = Selector::new("nonepad.dialog.reset_dirty");
 const FOCUS_PALETTE: Selector<()> = Selector::new("nonepad.palette.focus");
 
 pub struct PaletteManager<State: druid::Data + IsDirty> {
@@ -81,7 +80,7 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                         ctx.set_handled();
                         return;
                     }
-                    _ => (),
+                    _ => ()
                 }
             }
 
@@ -164,26 +163,6 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                 ctx.request_paint();
                 return;
             },
-
-            druid::Event::Command(cmd) if cmd.is(RESET_DIRTY) => {
-                data.inner_state.reset_dirty();
-                return;
-            },
-
-            druid::Event::WindowCloseRequested => {
-                if data.inner_state.is_dirty() {
-                    ctx.set_handled();
-                    self.dialog()
-                        .title("Discard unsaved change?")
-                        .on_action(|result, ctx| {
-                            if result == DialogResult::Ok {
-                                ctx.submit_command(Command::from(RESET_DIRTY));
-                                ctx.submit_command(druid::commands::CLOSE_WINDOW);
-                            }
-                        })
-                        .show(ctx);
-                }
-            }
 
             _ => ()
         }

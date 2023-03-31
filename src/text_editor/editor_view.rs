@@ -15,7 +15,7 @@ use tracing::{debug, error, trace};
 use crate::text_buffer::{EditStack, position, rope_utils, SelectionLineRange};
 use crate::text_buffer::syntax::{StateCache, StyledLinesCache, SYNTAXSET};
 use crate::text_editor::{ChildWidget, EDITOR_LEFT_PADDING, env, FILE_REMOVED, FOCUS_EDITOR, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, RELOAD_FROM_DISK, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, WIDGET_ATTACHED};
-use crate::text_editor::palette_view::{DialogResult, PaletteBuilder};
+use crate::text_editor::palette_view::{DialogResult, PALETTE_CALLBACK, PaletteBuilder, PaletteCommandType};
 
 #[derive(Debug, Default)]
 struct SelectionPath {
@@ -386,7 +386,7 @@ impl EditorView {
         e
     }
 
-    fn make_cua_key_bindings() -> EditorEventHandler {
+    pub fn make_cua_key_bindings() -> EditorEventHandler {
         let select_all_hotkey = HotKey::new(SysMods::Cmd, "a");
         let cut_hotkey = HotKey::new(SysMods::Cmd, "x");
         let copy_hotkey = HotKey::new(SysMods::Cmd, "c");
@@ -465,11 +465,8 @@ impl EditorView {
         if ctx.is_handled() {
             return true;
         }
+
         match event {
-            Event::WindowConnected => {
-                ctx.request_focus();
-                false
-            }
             Event::KeyDown(event) => {
                 match event {
                     #[cfg(windows)]
@@ -698,10 +695,6 @@ impl EditorView {
                 }
                 false
             }
-            Event::WindowDisconnected => {
-                self.stop_background_worker();
-                true
-            }
 
             Event::Command(cmd) if cmd.is(druid::commands::SAVE_FILE_AS) => {
                 let file_info = cmd.get_unchecked(druid::commands::SAVE_FILE_AS).clone();
@@ -732,7 +725,6 @@ impl EditorView {
                 }
                 true
             }
-
 
             Event::Command(cmd) if cmd.is(druid::commands::OPEN_FILE) => {
                 if let Some(file_info) = cmd.get(druid::commands::OPEN_FILE) {
@@ -813,7 +805,6 @@ impl EditorView {
                 true
             }
 
-
             Event::Command(cmd) if cmd.is(FILE_REMOVED) => {
                 editor.set_dirty();
                 true
@@ -824,6 +815,56 @@ impl EditorView {
                 ctx.request_focus();
                 true
             }
+
+            Event::Command(cmd) if cmd.is(PALETTE_CALLBACK) => {
+                let item = cmd.get_unchecked(PALETTE_CALLBACK);
+                match &item.1 {
+                    PaletteCommandType::EditorPalette(action) => {
+                        (action)(item.0.clone(), ctx, self, editor);
+                        true
+                    }
+                    PaletteCommandType::EditorDialog(action) => {
+                        let dialog_result = if item.0.index == 0 {
+                            DialogResult::Ok
+                        } else {
+                            DialogResult::Cancel
+                        };
+                        (action)(dialog_result, ctx, self, editor);
+                        true
+                    }
+                    _ => false
+                }
+            }
+
+            druid::Event::WindowCloseRequested => {
+                if editor.is_dirty() {
+                    ctx.set_handled();
+                    self.dialog()
+                        .title("Discard unsaved changes?")
+                        .on_select(|result, ctx, _view, edit| {
+                            if result == DialogResult::Ok {
+                                edit.reset_dirty();
+                                ctx.submit_command(druid::commands::CLOSE_WINDOW);
+                            }
+                        })
+                        .show(ctx);
+
+                    true
+                } else {
+                    false
+                }
+            }
+
+            Event::WindowDisconnected => {
+                self.stop_background_worker();
+                false
+            }
+
+            Event::WindowConnected => {
+                ctx.request_focus();
+                false
+            }
+
             _ => false,
         }
     }
