@@ -1,8 +1,12 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 use druid::{BoxConstraints, Data, Lens, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Size, UpdateCtx, Widget, WidgetPod, WidgetId, Selector, Command};
 use druid::im::Vector;
+use crate::text_editor::editor_view::EditorKeyBindings;
 use crate::text_editor::palette_view::{CLOSE_PALETTE, DialogResult, Item, Palette, PALETTE_CALLBACK, PaletteBuilder, PaletteCommandType, PaletteResult, PaletteView, PaletteViewState, SHOW_DIALOG_FOR_EDITOR, SHOW_PALETTE_FOR_EDITOR, ShowPalette};
 use crate::text_editor::RESET_HELD_STATE;
+
+pub(crate) const SHOW_PALETTE: Selector = Selector::new("nonepad.palette.show_for_context");
 
 pub trait IsDirty {
     fn is_dirty(&self) -> bool;
@@ -14,6 +18,7 @@ const FOCUS_PALETTE: Selector<()> = Selector::new("nonepad.palette.focus");
 pub struct PaletteManager<State: druid::Data + IsDirty> {
     inner: Box<WidgetPod<State, Box<dyn Widget<State>>>>,
     palette: WidgetPod<PaletteViewState, PaletteView>,
+    key_bindings: Option<Rc<RefCell<EditorKeyBindings>>>
 }
 
 #[derive(Clone, Lens)]
@@ -32,10 +37,11 @@ impl<State: druid::Data + IsDirty> Data for PaletteManagerState<State> {
 }
 
 impl<State: druid::Data + IsDirty> PaletteManager<State> {
-    pub fn build(inner: Box<dyn Widget<State>>, state: State, event_callback: Option<Rc<dyn Fn(&mut EventCtx, &Event, &mut State)>>) -> (Self, PaletteManagerState<State>){
+    pub fn build(inner: Box<dyn Widget<State>>, state: State, event_callback: Option<Rc<dyn Fn(&mut EventCtx, &Event, &mut State)>>, key_bindings: Option<Rc<RefCell<EditorKeyBindings>>>) -> (Self, PaletteManagerState<State>){
         let widget = PaletteManager {
             inner: Box::new(WidgetPod::new(inner)),
-            palette: WidgetPod::new(PaletteView::new())
+            palette: WidgetPod::new(PaletteView::new()),
+            key_bindings
         };
 
         let widget_state = PaletteManagerState {
@@ -57,6 +63,25 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
         }
         if ctx.is_handled() {
             return;
+        }
+
+        if let Some(key_bindings) = &self.key_bindings {
+            let bindings = key_bindings.borrow_mut();
+
+            match event {
+                Event::KeyDown(event) => {
+                    for cmd in &bindings.window_commands {
+                        if cmd.matches(event) {
+                            cmd.exec(ctx);
+                            if ctx.is_handled() {
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                _ => ()
+            }
         }
 
         match event {
@@ -82,6 +107,11 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                     }
                     _ => ()
                 }
+            }
+
+            druid::Event::Command(cmd) if cmd.is(SHOW_PALETTE) => {
+                // show the command palette
+                println!("Show the palette")
             }
 
             druid::Event::Command(cmd) if cmd.is(FOCUS_PALETTE) => {

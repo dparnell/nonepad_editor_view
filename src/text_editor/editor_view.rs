@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::thread;
 use druid::kurbo::{BezPath, Line, PathEl};
 use druid::piet::{PietText, Text, TextAttribute, TextLayout, TextLayoutBuilder};
-use druid::{Affine, Application, BoxConstraints, ClipboardFormat, Color, Command, Data, Env, Event, EventCtx, ExtEventSink, FontStyle, HotKey, KeyEvent, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, Point, Rect, RenderContext, Size, SysMods, UpdateCtx, Widget, WidgetId};
+use druid::{Affine, Application, BoxConstraints, ClipboardFormat, Color, Command, Data, Env, Event, EventCtx, ExtEventSink, FontStyle, HotKey, KeyEvent, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, Point, Rect, RenderContext, Selector, Size, SysMods, UpdateCtx, Widget, WidgetId};
 use lazy_static::lazy_static;
 use ropey::Rope;
 use syntect::parsing::SyntaxReference;
@@ -17,7 +17,7 @@ use tracing::{debug, error, trace};
 use crate::text_buffer::{EditStack, position, rope_utils, SelectionLineRange};
 use crate::text_buffer::syntax::{StateCache, StyledLinesCache, SYNTAXSET};
 use crate::text_editor::{ChildWidget, EDITOR_LEFT_PADDING, env, FILE_REMOVED, FOCUS_EDITOR, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, RELOAD_FROM_DISK, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, WIDGET_ATTACHED};
-use crate::text_editor::editor_view::UICommandCallback::Window;
+use crate::text_editor::palette_manager::SHOW_PALETTE;
 use crate::text_editor::palette_view::{DialogResult, PALETTE_CALLBACK, PaletteBuilder, PaletteCommandType};
 
 #[derive(Debug, Default)]
@@ -139,66 +139,81 @@ pub type EditorEventHandler = Box<dyn FnMut(&mut EventCtx, &Event, &mut EditStac
 
 pub type EditorCallback = fn(&mut EventCtx, &mut EditStack) -> ();
 
-#[derive(Clone)]
-pub enum UICommandCallback {
-    Window(Command),
-    EditView(EditorCallback),
-}
-
-pub struct UICommand {
+pub struct EditorCommand {
     pub description: Option<String>,
     pub shortcut: Option<druid::HotKey>,
-    pub exec: UICommandCallback,
+    pub exec: EditorCallback,
 }
 
-impl UICommand {
-    pub fn new_editor_command(description: Option<String>, shortcut: Option<druid::HotKey>, exec: EditorCallback) -> Self {
-        UICommand {
+impl EditorCommand {
+    pub fn new(description: Option<String>, shortcut: Option<druid::HotKey>, exec: EditorCallback) -> Self {
+        EditorCommand {
             description,
             shortcut,
-            exec: UICommandCallback::EditView(exec)
+            exec
         }
     }
 
-    pub fn new_command(description: String, shortcut: Option::<druid::HotKey>, command: Command) -> Self {
-        UICommand {
-            description: Some(description),
+    pub(crate) fn execute(&self, ctx: &mut EventCtx, editor: &mut EditStack) {
+        (self.exec)(ctx, editor);
+    }
+
+    pub(crate) fn matches(&self, event: &KeyEvent) -> bool {
+        self.shortcut.clone().map(|s| s.matches(event)).unwrap_or(false)
+    }
+}
+
+pub struct WindowCommand {
+    pub description: String,
+    pub shortcut: Option<druid::HotKey>,
+    pub selector: Selector
+}
+
+impl WindowCommand {
+    pub fn new_command(description: String, shortcut: Option::<druid::HotKey>, selector: Selector) -> Self {
+        WindowCommand {
+            description,
             shortcut,
-            exec: Window(command)
+            selector
         }
     }
 
-    fn matches(&self, event: &KeyEvent) -> bool {
+    pub(crate) fn exec(&self, ctx: &mut EventCtx) {
+        ctx.submit_command(Command::from(self.selector));
+    }
+
+    pub(crate) fn matches(&self, event: &KeyEvent) -> bool {
         self.shortcut.clone().map(|s| s.matches(event)).unwrap_or(false)
     }
 }
 
 pub struct EditorKeyBindings {
     pub event_handler: Option<EditorEventHandler>,
-    pub commands: Vec<UICommand>
+    pub editor_commands: Vec<EditorCommand>,
+    pub window_commands: Vec<WindowCommand>
 }
 
 impl EditorKeyBindings {
     pub fn cua() -> Self {
         let mut commands = Vec::new();
 
-        commands.push(UICommand::new_editor_command(Some(String::from("Select all")), Some(HotKey::new(SysMods::Cmd, "a")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some(String::from("Select all")), Some(HotKey::new(SysMods::Cmd, "a")), |ctx, editor| {
             editor.select_all();
             ctx.set_handled();
         }));
 
-        commands.push(UICommand::new_editor_command(Some(String::from("Cut")), Some(HotKey::new(SysMods::Cmd, "x")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some(String::from("Cut")), Some(HotKey::new(SysMods::Cmd, "x")), |ctx, editor| {
             Application::global().clipboard().put_string(editor.selected_text());
             editor.delete();
             ctx.set_handled();
         }));
 
-        commands.push(UICommand::new_editor_command(Some(String::from("Copy")), Some(HotKey::new(SysMods::Cmd, "c")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some(String::from("Copy")), Some(HotKey::new(SysMods::Cmd, "c")), |ctx, editor| {
             Application::global().clipboard().put_string(editor.selected_text());
             ctx.set_handled();
         }));
 
-        commands.push(UICommand::new_editor_command(Some(String::from("Paste")), Some(HotKey::new(SysMods::Cmd, "v")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some(String::from("Paste")), Some(HotKey::new(SysMods::Cmd, "v")), |ctx, editor| {
             let clipboard = Application::global().clipboard();
             let supported_types = &[ClipboardFormat::TEXT];
             let best_available_type = clipboard.preferred_format(supported_types);
@@ -210,29 +225,35 @@ impl EditorKeyBindings {
             ctx.set_handled();
         }));
 
-        commands.push(UICommand::new_editor_command(Some(String::from("Undo")), Some(HotKey::new(SysMods::Cmd, "z")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some(String::from("Undo")), Some(HotKey::new(SysMods::Cmd, "z")), |ctx, editor| {
             editor.undo();
             ctx.set_handled();
         }));
 
-        commands.push(UICommand::new_editor_command(Some(String::from("Redo")), Some(HotKey::new(SysMods::CmdShift, "Z")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some(String::from("Redo")), Some(HotKey::new(SysMods::CmdShift, "Z")), |ctx, editor| {
             editor.redo();
             ctx.set_handled();
         }));
 
-        commands.push(UICommand::new_editor_command(Some(String::from("Redo")), Some(HotKey::new(SysMods::Cmd, "y")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some(String::from("Redo")), Some(HotKey::new(SysMods::Cmd, "y")), |ctx, editor| {
             editor.redo();
             ctx.set_handled();
         }));
 
         EditorKeyBindings {
             event_handler: None,
-            commands,
+            editor_commands: commands,
+            window_commands: vec![]
         }
     }
 
+    pub fn with_palette(mut self) -> Self {
+        self.window_commands.push(WindowCommand::new_command(String::from("Show Palette"), Some(HotKey::new(SysMods::CmdShift, "P")), SHOW_PALETTE));
 
-    fn handle_event(&mut self, event: &Event, ctx: &mut EventCtx, editor: &mut EditStack) {
+        self
+    }
+
+    fn handle_editor_event(&mut self, event: &Event, ctx: &mut EventCtx, editor: &mut EditStack) {
         if let Some(handler) = &mut self.event_handler {
             handler(ctx, event, editor);
         }
@@ -240,16 +261,11 @@ impl EditorKeyBindings {
         if !ctx.is_handled() {
             match event {
                 Event::KeyDown(event) => {
-                    for cmd in &self.commands {
-                        match cmd.exec {
-                            Window(_) => {}
-                            UICommandCallback::EditView(callback) => {
-                                if cmd.matches(event) {
-                                    callback(ctx, editor);
-                                    if ctx.is_handled() {
-                                        break;
-                                    }
-                                }
+                    for cmd in &self.editor_commands {
+                        if cmd.matches(event) {
+                            cmd.execute(ctx, editor);
+                            if ctx.is_handled() {
+                                break;
                             }
                         }
                     }
@@ -259,7 +275,6 @@ impl EditorKeyBindings {
             }
         }
     }
-
 }
 
 pub struct EditorView {
@@ -531,7 +546,7 @@ impl EditorView {
     fn handle_event(&mut self, event: &Event, ctx: &mut EventCtx, editor: &mut EditStack) -> bool {
         {
             let mut bindings = self.key_bindings.borrow_mut();
-            bindings.handle_event(event, ctx, editor);
+            bindings.handle_editor_event(event, ctx, editor);
         }
 
         if ctx.is_handled() {

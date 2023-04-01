@@ -42,14 +42,14 @@ pub fn main() {
         edit_stack: EditStack::new(),
     };
 
-    let key_bindings = Rc::new(RefCell::new(EditorKeyBindings::cua()));
+    let key_bindings = Rc::new(RefCell::new(EditorKeyBindings::cua().with_palette()));
 
     initial_state.edit_stack.insert("-- enter some SQL text here\nselect * from mytable where id=1234 or name in ('Molly', 'Marcus')\n\n");
     initial_state.edit_stack.reset_dirty();
 
     initial_state.edit_stack.file.syntax = SYNTAXSET.find_syntax_by_name("SQL").expect("SQL Syntax not found");
 
-    let (root, state) = PaletteManager::build(build_root_widget(key_bindings).boxed(), initial_state, None);
+    let (root, state) = PaletteManager::build(build_root_widget(key_bindings.clone()).boxed(), initial_state, None, Some(key_bindings));
 
     // describe the main window
     let main_window = WindowDesc::new(root)
