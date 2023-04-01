@@ -1,6 +1,8 @@
 // On Windows platform, don't show a console when opening the app.
 #![windows_subsystem = "windows"]
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use druid::widget::prelude::*;
 use druid::{AppLauncher, Color, Data, Lens, WidgetExt, WindowDesc};
 use nonepad_editor_view::text_buffer::EditStack;
@@ -40,12 +42,14 @@ pub fn main() {
         edit_stack: EditStack::new(),
     };
 
+    let key_bindings = Rc::new(RefCell::new(EditorKeyBindings::cua()));
+
     initial_state.edit_stack.insert("-- enter some SQL text here\nselect * from mytable where id=1234 or name in ('Molly', 'Marcus')\n\n");
     initial_state.edit_stack.reset_dirty();
 
     initial_state.edit_stack.file.syntax = SYNTAXSET.find_syntax_by_name("SQL").expect("SQL Syntax not found");
 
-    let (root, state) = PaletteManager::build(build_root_widget().boxed(), initial_state, None);
+    let (root, state) = PaletteManager::build(build_root_widget(key_bindings).boxed(), initial_state, None);
 
     // describe the main window
     let main_window = WindowDesc::new(root)
@@ -73,6 +77,6 @@ pub fn main() {
         .expect("Failed to launch application");
 }
 
-fn build_root_widget() -> impl Widget<SimpleState> {
-    text_editor::new(EditorKeyBindings::Cua).lens(SimpleState::edit_stack)
+fn build_root_widget(bindings: Rc<RefCell<EditorKeyBindings>>) -> impl Widget<SimpleState> {
+    text_editor::new(bindings).lens(SimpleState::edit_stack)
 }

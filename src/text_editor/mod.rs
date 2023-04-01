@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use druid::{BoxConstraints, Env, Event, EventCtx, FontWeight, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Selector, Size, UpdateCtx, Widget, WidgetExt, WidgetId};
 use druid::widget::Flex;
 use tracing::trace;
@@ -69,7 +71,7 @@ impl TextEditor {
         data.buffer.max_visible_line_grapheme_len().saturating_sub(3) as f64 * self.metrics.font_advance
     }
 
-    fn new(key_bindings: EditorKeyBindings) -> Self {
+    fn new(key_bindings: Rc<RefCell<EditorKeyBindings>>) -> Self {
         let id = WidgetId::next();
 
         TextEditor {
@@ -179,7 +181,7 @@ impl Widget<EditStack> for TextEditor {
     }
 }
 
-pub fn new(key_bindings: EditorKeyBindings) -> impl Widget<EditStack> {
+pub fn new(key_bindings: Rc<RefCell<EditorKeyBindings>>) -> impl Widget<EditStack> {
     let t = TextEditor::new(key_bindings);
     let id = t.id;
     t.with_id(id)

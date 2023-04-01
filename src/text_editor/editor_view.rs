@@ -1,13 +1,15 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut, Range};
 use std::path::{Path};
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use std::thread;
 use druid::kurbo::{BezPath, Line, PathEl};
 use druid::piet::{PietText, Text, TextAttribute, TextLayout, TextLayoutBuilder};
-use druid::{Affine, Application, BoxConstraints, ClipboardFormat, Color, Data, Env, Event, EventCtx, ExtEventSink, FontStyle, HotKey, KeyEvent, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, Point, Rect, RenderContext, Size, SysMods, UpdateCtx, Widget, WidgetId};
+use druid::{Affine, Application, BoxConstraints, ClipboardFormat, Color, Command, Data, Env, Event, EventCtx, ExtEventSink, FontStyle, HotKey, KeyEvent, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, Point, Rect, RenderContext, Size, SysMods, UpdateCtx, Widget, WidgetId};
 use lazy_static::lazy_static;
 use ropey::Rope;
 use syntect::parsing::SyntaxReference;
@@ -15,6 +17,7 @@ use tracing::{debug, error, trace};
 use crate::text_buffer::{EditStack, position, rope_utils, SelectionLineRange};
 use crate::text_buffer::syntax::{StateCache, StyledLinesCache, SYNTAXSET};
 use crate::text_editor::{ChildWidget, EDITOR_LEFT_PADDING, env, FILE_REMOVED, FOCUS_EDITOR, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, RELOAD_FROM_DISK, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, WIDGET_ATTACHED};
+use crate::text_editor::editor_view::UICommandCallback::Window;
 use crate::text_editor::palette_view::{DialogResult, PALETTE_CALLBACK, PaletteBuilder, PaletteCommandType};
 
 #[derive(Debug, Default)]
@@ -134,10 +137,129 @@ pub enum BackgroundWorkerMessage {
 
 pub type EditorEventHandler = Box<dyn FnMut(&mut EventCtx, &Event, &mut EditStack) -> ()>;
 
-pub enum EditorKeyBindings {
-    None,
-    Cua,
-    Custom(EditorEventHandler)
+pub type EditorCallback = fn(&mut EventCtx, &mut EditStack) -> ();
+
+#[derive(Clone)]
+pub enum UICommandCallback {
+    Window(Command),
+    EditView(EditorCallback),
+}
+
+pub struct UICommand {
+    pub description: Option<String>,
+    pub shortcut: Option<druid::HotKey>,
+    pub exec: UICommandCallback,
+}
+
+impl UICommand {
+    pub fn new_editor_command(description: Option<String>, shortcut: Option<druid::HotKey>, exec: EditorCallback) -> Self {
+        UICommand {
+            description,
+            shortcut,
+            exec: UICommandCallback::EditView(exec)
+        }
+    }
+
+    pub fn new_command(description: String, shortcut: Option::<druid::HotKey>, command: Command) -> Self {
+        UICommand {
+            description: Some(description),
+            shortcut,
+            exec: Window(command)
+        }
+    }
+
+    fn matches(&self, event: &KeyEvent) -> bool {
+        self.shortcut.clone().map(|s| s.matches(event)).unwrap_or(false)
+    }
+}
+
+pub struct EditorKeyBindings {
+    pub event_handler: Option<EditorEventHandler>,
+    pub commands: Vec<UICommand>
+}
+
+impl EditorKeyBindings {
+    pub fn cua() -> Self {
+        let mut commands = Vec::new();
+
+        commands.push(UICommand::new_editor_command(Some(String::from("Select all")), Some(HotKey::new(SysMods::Cmd, "a")), |ctx, editor| {
+            editor.select_all();
+            ctx.set_handled();
+        }));
+
+        commands.push(UICommand::new_editor_command(Some(String::from("Cut")), Some(HotKey::new(SysMods::Cmd, "x")), |ctx, editor| {
+            Application::global().clipboard().put_string(editor.selected_text());
+            editor.delete();
+            ctx.set_handled();
+        }));
+
+        commands.push(UICommand::new_editor_command(Some(String::from("Copy")), Some(HotKey::new(SysMods::Cmd, "c")), |ctx, editor| {
+            Application::global().clipboard().put_string(editor.selected_text());
+            ctx.set_handled();
+        }));
+
+        commands.push(UICommand::new_editor_command(Some(String::from("Paste")), Some(HotKey::new(SysMods::Cmd, "v")), |ctx, editor| {
+            let clipboard = Application::global().clipboard();
+            let supported_types = &[ClipboardFormat::TEXT];
+            let best_available_type = clipboard.preferred_format(supported_types);
+            if let Some(format) = best_available_type {
+                if  let Some(data) = clipboard.get_format(format) {
+                    editor.insert(String::from_utf8_lossy(&data).as_ref());
+                }
+            }
+            ctx.set_handled();
+        }));
+
+        commands.push(UICommand::new_editor_command(Some(String::from("Undo")), Some(HotKey::new(SysMods::Cmd, "z")), |ctx, editor| {
+            editor.undo();
+            ctx.set_handled();
+        }));
+
+        commands.push(UICommand::new_editor_command(Some(String::from("Redo")), Some(HotKey::new(SysMods::CmdShift, "Z")), |ctx, editor| {
+            editor.redo();
+            ctx.set_handled();
+        }));
+
+        commands.push(UICommand::new_editor_command(Some(String::from("Redo")), Some(HotKey::new(SysMods::Cmd, "y")), |ctx, editor| {
+            editor.redo();
+            ctx.set_handled();
+        }));
+
+        EditorKeyBindings {
+            event_handler: None,
+            commands,
+        }
+    }
+
+
+    fn handle_event(&mut self, event: &Event, ctx: &mut EventCtx, editor: &mut EditStack) {
+        if let Some(handler) = &mut self.event_handler {
+            handler(ctx, event, editor);
+        }
+
+        if !ctx.is_handled() {
+            match event {
+                Event::KeyDown(event) => {
+                    for cmd in &self.commands {
+                        match cmd.exec {
+                            Window(_) => {}
+                            UICommandCallback::EditView(callback) => {
+                                if cmd.matches(event) {
+                                    callback(ctx, editor);
+                                    if ctx.is_handled() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                _ => ()
+            }
+        }
+    }
+
 }
 
 pub struct EditorView {
@@ -161,7 +283,7 @@ pub struct EditorView {
 
     highlighted_line: StyledLinesCache,
 
-    event_handler: Option<EditorEventHandler>
+    key_bindings: Rc<RefCell<EditorKeyBindings>>
 }
 
 struct State<'a> {
@@ -355,13 +477,7 @@ impl EditorView {
         }
     }
 
-    pub fn new(owner_id: WidgetId, key_bindings: EditorKeyBindings) -> Self {
-
-        let event_handler = match key_bindings {
-            EditorKeyBindings::None => None,
-            EditorKeyBindings::Cua => Some(EditorView::make_cua_key_bindings()),
-            EditorKeyBindings::Custom(handler) => Some(handler)
-        };
+    pub fn new(owner_id: WidgetId, key_bindings: Rc<RefCell<EditorKeyBindings>>) -> Self {
 
         let e = EditorView {
             bg_color: Color::BLACK,
@@ -380,55 +496,10 @@ impl EditorView {
             longest_line_len: 0.,
             held_state: HeldState::None,
             highlighted_line: StyledLinesCache::new(),
-            event_handler,
+            key_bindings,
         };
 
         e
-    }
-
-    pub fn make_cua_key_bindings() -> EditorEventHandler {
-        let select_all_hotkey = HotKey::new(SysMods::Cmd, "a");
-        let cut_hotkey = HotKey::new(SysMods::Cmd, "x");
-        let copy_hotkey = HotKey::new(SysMods::Cmd, "c");
-        let paste_hotkey = HotKey::new(SysMods::Cmd, "v");
-        let undo_hotkey = HotKey::new(SysMods::Cmd, "z");
-        let redo_hotkey = HotKey::new(SysMods::CmdShift, "Z");
-        let redo2_hotkey = HotKey::new(SysMods::Cmd, "y");
-
-        Box::new(move |ctx, event, editor| {
-            match event {
-                Event::KeyDown(event) => {
-                    if cut_hotkey.matches(event) {
-                        Application::global().clipboard().put_string(editor.selected_text());
-                        editor.delete();
-                        ctx.set_handled();
-                    } else if copy_hotkey.matches(event) {
-                        Application::global().clipboard().put_string(editor.selected_text());
-                        ctx.set_handled();
-                    } else if paste_hotkey.matches(event) {
-                        let clipboard = Application::global().clipboard();
-                        let supported_types = &[ClipboardFormat::TEXT];
-                        let best_available_type = clipboard.preferred_format(supported_types);
-                        if let Some(format) = best_available_type {
-                            if  let Some(data) = clipboard.get_format(format) {
-                                editor.insert(String::from_utf8_lossy(&data).as_ref());
-                            }
-                        }
-                        ctx.set_handled();
-                    } else if undo_hotkey.matches(event) {
-                        editor.undo();
-                        ctx.set_handled();
-                    } else if redo_hotkey.matches(event) || redo2_hotkey.matches(event) {
-                        editor.redo();
-                        ctx.set_handled();
-                    } else if select_all_hotkey.matches(event) {
-                        editor.select_all();
-                        ctx.set_handled();
-                    }
-                }
-                _ => ()
-            }
-        })
     }
 
     fn update_highlighter(&self, data: &EditStack, line: usize) {
@@ -458,8 +529,9 @@ impl EditorView {
     }
 
     fn handle_event(&mut self, event: &Event, ctx: &mut EventCtx, editor: &mut EditStack) -> bool {
-        if let Some(handler) = self.event_handler.as_deref_mut() {
-            handler(ctx, event, editor);
+        {
+            let mut bindings = self.key_bindings.borrow_mut();
+            bindings.handle_event(event, ctx, editor);
         }
 
         if ctx.is_handled() {
