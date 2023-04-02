@@ -8,7 +8,7 @@ use druid::{AppLauncher, Color, Data, Lens, WidgetExt, WindowDesc};
 use nonepad_editor_view::text_buffer::EditStack;
 use nonepad_editor_view::text_buffer::syntax::SYNTAXSET;
 use nonepad_editor_view::text_editor;
-use nonepad_editor_view::text_editor::editor_view::EditorKeyBindings;
+use nonepad_editor_view::text_editor::editor_view::{EditorCommand, EditorKeyBindings};
 use nonepad_editor_view::text_editor::palette_manager::{IsDirty, PaletteManager};
 use nonepad_editor_view::theme::Theme;
 
@@ -28,7 +28,6 @@ impl IsDirty for SimpleState {
 }
 
 pub fn main() {
-    /*
     #[cfg(debug_assertions)]
     {
         let subscriber = tracing_subscriber::FmtSubscriber::builder().with_max_level(tracing::Level::TRACE).finish();
@@ -36,13 +35,21 @@ pub fn main() {
         tracing::subscriber::set_global_default(subscriber)
             .expect("setting default subscriber failed");
     }
-*/
+
     // create the initial app state
     let mut initial_state: SimpleState = SimpleState {
         edit_stack: EditStack::new(),
     };
 
-    let key_bindings = Rc::new(RefCell::new(EditorKeyBindings::cua().with_palette()));
+    let mut key_bindings = EditorKeyBindings::cua().with_palette();
+    for (idx, syntax) in SYNTAXSET.syntaxes().iter().enumerate() {
+        let desc = format!("Set syntax: {}", syntax.name);
+        key_bindings.editor_commands.push(EditorCommand::new(Some(desc.as_str()), None, idx as u64,|_ctx, tag, editor| {
+            editor.file.syntax = SYNTAXSET.syntaxes().get(tag as usize).unwrap();
+        }).unwrap());
+    }
+
+    let key_bindings = Rc::new(RefCell::new(key_bindings));
 
     initial_state.edit_stack.insert("-- enter some SQL text here\nselect * from mytable where id=1234 or name in ('Molly', 'Marcus')\n\n");
     initial_state.edit_stack.reset_dirty();

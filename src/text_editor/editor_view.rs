@@ -139,19 +139,20 @@ pub enum BackgroundWorkerMessage {
 
 pub type EditorEventHandler = Box<dyn FnMut(&mut EventCtx, &Event, &mut EditStack) -> ()>;
 
-pub type EditorCallback = fn(&mut EventCtx, &mut EditStack) -> ();
+pub type EditorCallback = fn(&mut EventCtx, u64, &mut EditStack) -> ();
 
-pub const EDITOR_PALETTE_CALLBACK: Selector<EditorCallback> = Selector::new("nonepad.palette.editor_callback");
+pub const EDITOR_PALETTE_CALLBACK: Selector<(u64, EditorCallback)> = Selector::new("nonepad.palette.editor_callback");
 
 pub struct EditorCommand {
     pub description: Option<Arc<String>>,
     pub shortcut: Option<Arc<String>>,
     pub hotkey: Option<druid::HotKey>,
+    pub tag: u64,
     pub exec: EditorCallback,
 }
 
 impl EditorCommand {
-    pub fn new(description: Option<&str>, shortcut: Option<&str>, exec: EditorCallback) -> Result<Self, UnrecognizedKeyError> {
+    pub fn new(description: Option<&str>, shortcut: Option<&str>, tag: u64, exec: EditorCallback) -> Result<Self, UnrecognizedKeyError> {
         let hotkey = if let Some(shortcut) = shortcut {
             Some(parse_hotkey(shortcut)?)
         } else {
@@ -165,12 +166,13 @@ impl EditorCommand {
             description: description.map(|s| Arc::new(s.into())),
             shortcut: shortcut.map(|s| Arc::new(s.into())),
             hotkey,
+            tag,
             exec
         })
     }
 
     pub(crate) fn execute(&self, ctx: &mut EventCtx, editor: &mut EditStack) {
-        (self.exec)(ctx, editor);
+        (self.exec)(ctx, self.tag, editor);
     }
 
     pub(crate) fn matches(&self, event: &KeyEvent) -> bool {
@@ -197,7 +199,11 @@ pub fn parse_hotkey(s: &str) -> Result<HotKey, UnrecognizedKeyError> {
 
         match k {
             Key::Character(ch) => {
-                key = Some(Key::Character(ch))
+                if modifiers.shift() {
+                    key = Some(Key::Character(ch.to_ascii_uppercase()))
+                } else {
+                    key = Some(Key::Character(ch.to_ascii_lowercase()))
+                }
             },
             Key::Shift => modifiers.set(Modifiers::SHIFT, true),
             Key::Alt => modifiers.set(Modifiers::ALT, true),
@@ -278,23 +284,23 @@ impl EditorKeyBindings {
     pub fn cua() -> Self {
         let mut commands = Vec::new();
 
-        commands.push(EditorCommand::new(Some("Select all"), Some("Cmd-a"), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Select all"), Some("Cmd-A"), 0, |ctx, _tag, editor| {
             editor.select_all();
             ctx.set_handled();
         }).unwrap());
 
-        commands.push(EditorCommand::new(Some("Cut"), Some("Cmd-x"), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Cut"), Some("Cmd-X"), 0,|ctx, _tag, editor| {
             Application::global().clipboard().put_string(editor.selected_text());
             editor.delete();
             ctx.set_handled();
         }).unwrap());
 
-        commands.push(EditorCommand::new(Some("Copy"), Some( "Cmd-c"), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Copy"), Some( "Cmd-C"), 0,|ctx, _tag, editor| {
             Application::global().clipboard().put_string(editor.selected_text());
             ctx.set_handled();
         }).unwrap());
 
-        commands.push(EditorCommand::new(Some("Paste"), Some("Cmd-v"), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Paste"), Some("Cmd-V"), 0,|ctx, _tag, editor| {
             let clipboard = Application::global().clipboard();
             let supported_types = &[ClipboardFormat::TEXT];
             let best_available_type = clipboard.preferred_format(supported_types);
@@ -306,19 +312,19 @@ impl EditorKeyBindings {
             ctx.set_handled();
         }).unwrap());
 
-        commands.push(EditorCommand::new(Some("Undo"), Some("Cmd-z"), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Undo"), Some("Cmd-Z"), 0,|ctx, _tag, editor| {
             editor.undo();
             ctx.set_handled();
         }).unwrap());
 
-        commands.push(EditorCommand::new(Some("Redo"), Some("Cmd-Shift-Z"), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Redo"), Some("Cmd-Shift-Z"), 0,|ctx, _tag, editor| {
             editor.redo();
             ctx.set_handled();
         }).unwrap());
 
 
         #[cfg(not(target_os = "macos"))]
-        commands.push(EditorCommand::new(Some("Redo"), Some("Ctrl-y"), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Redo"), Some("Ctrl-Y"), 0, |ctx, _tag, editor| {
             editor.redo();
             ctx.set_handled();
         }).unwrap());
@@ -868,9 +874,9 @@ impl EditorView {
             }
 
             Event::Command(cmd) if cmd.is(EDITOR_PALETTE_CALLBACK) => {
-                let exec = cmd.get_unchecked(EDITOR_PALETTE_CALLBACK);
+                let (tag, exec) = cmd.get_unchecked(EDITOR_PALETTE_CALLBACK);
 
-                exec(ctx, editor);
+                exec(ctx, *tag, editor);
                 ctx.set_handled();
 
                 true

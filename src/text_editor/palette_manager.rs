@@ -130,6 +130,8 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                         }
                     }
 
+                    items.sort();
+
                     if !items.is_empty() {
                         self.palette()
                             .items(items)
@@ -158,7 +160,7 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                         if let Some(cmd) = bindings.editor_commands.get((result.tag - EDITOR_OFFSET) as usize) {
                             if let Some(editor) = data.editor {
                                 // println!("Sending EDITOR_PALETTE_CALLBACK to {editor:?}");
-                                ctx.submit_command(EDITOR_PALETTE_CALLBACK.with(cmd.exec).to(editor));
+                                ctx.submit_command(EDITOR_PALETTE_CALLBACK.with((cmd.tag, cmd.exec)).to(editor));
                             }
                         }
                     }

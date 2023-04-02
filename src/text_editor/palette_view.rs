@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::cmp::Ordering::Equal;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -21,6 +22,26 @@ pub struct Item {
     score: isize,
     hotkey: Option<Arc<String>>,
     tag: u64
+}
+
+impl Eq for Item {}
+
+impl PartialEq<Self> for Item {
+    fn eq(&self, other: &Self) -> bool {
+        self.title.eq(&other.title)
+    }
+}
+
+impl PartialOrd<Self> for Item {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.title.partial_cmp(&other.title)
+    }
+}
+
+impl Ord for Item {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.title.cmp(&other.title)
+    }
 }
 
 impl Item {
