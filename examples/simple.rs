@@ -49,7 +49,8 @@ pub fn main() {
 
     initial_state.edit_stack.file.syntax = SYNTAXSET.find_syntax_by_name("SQL").expect("SQL Syntax not found");
 
-    let (root, state) = PaletteManager::build(build_root_widget(key_bindings.clone()).boxed(), initial_state, None, Some(key_bindings));
+    let root = build_root_widget(key_bindings.clone()).boxed();
+    let (root, state) = PaletteManager::build(root, initial_state, None, Some(key_bindings));
 
     // describe the main window
     let main_window = WindowDesc::new(root)

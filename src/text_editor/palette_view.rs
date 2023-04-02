@@ -5,10 +5,7 @@ use std::sync::Arc;
 use druid::im::Vector;
 use druid::piet::{Text, TextLayout, TextLayoutBuilder};
 use druid::widget::{Flex, Label, Padding, TextBox};
-use druid::{
-    Affine, Color, Data, Env, Event, EventCtx, KbKey, KeyEvent, Lens, LifeCycle, Point, Rect, RenderContext,
-    Selector, Size, Widget, WidgetExt, WidgetId, WidgetPod,
-};
+use druid::{Affine, Color, Data, Env, Event, EventCtx, KbKey, KeyEvent, Lens, LifeCycle, Point, Rect, RenderContext, Selector, Size, Widget, WidgetExt, WidgetId, WidgetPod};
 
 use sublime_fuzzy::best_match;
 
@@ -22,27 +19,23 @@ pub struct Item {
     description: Arc<String>,
     filtered: bool,
     score: isize,
+    hotkey: Option<Arc<String>>,
+    tag: u64
 }
 
 impl Item {
-    pub fn new(title: &str, description: &str) -> Self {
+    pub fn new(title: &str, description: &str, hotkey: Option<String>, tag: u64) -> Self {
         Self {
             title: Arc::new(title.into()),
             description: Arc::new(description.into()),
             filtered: false,
             score: 0,
+            hotkey: hotkey.map(|k| Arc::new(k)),
+            tag
         }
     }
 }
 
-macro_rules! item {
-    ($($n : expr), + $(,) ?) => {{
-        let mut v = Vector::new();
-        $(v.push_back(Item::new($n,"") );)+
-        v
-    }};
-}
-pub(crate) use item;
 use crate::text_buffer::EditStack;
 use crate::text_editor::editor_view::EditorView;
 
@@ -179,6 +172,7 @@ impl Widget<PaletteViewState> for PaletteView {
                                                 PaletteResult {
                                                     index: item.0,
                                                     name: item.1.title.clone(),
+                                                    tag: item.1.tag
                                                 },
                                                 f,
                                             )));
@@ -191,6 +185,7 @@ impl Widget<PaletteViewState> for PaletteView {
                                             PaletteResult {
                                                 index: 0,
                                                 name: Arc::new(data.filter.clone()),
+                                                tag: 0
                                             },
                                             f,
                                         )));
@@ -339,8 +334,20 @@ impl Widget<PaletteViewState> for PaletteList {
                     .max_width(500.)
                     .build()
                     .unwrap();
+
+                let hotkey_layout = item.1.hotkey.clone().map(|k|
+                    ctx
+                        .text()
+                        .new_text_layout(k)
+                        .font(env.get(druid::theme::UI_FONT).family, 12.0)
+                        .text_color(env.get(druid::theme::TEXT_COLOR))
+                        .alignment(druid::TextAlignment::End)
+                        .max_width(500.)
+                        .build()
+                        .unwrap());
+
                 let height = layout.size().height;
-                layouts.push((dy, layout));
+                layouts.push((dy, layout, hotkey_layout));
                 if i == data.selected_idx {
                     selection_rect = Rect::new(2.5, dy, size.width - 4.5, dy + height + 4.5);
                 }
@@ -364,6 +371,9 @@ impl Widget<PaletteViewState> for PaletteList {
                 );
                 for l in layouts {
                     ctx.draw_text(&l.1, (25.5, l.0));
+                    if let Some(hotkey) = &l.2 {
+                        ctx.draw_text(hotkey, (25.5, l.0));
+                    }
                 }
             });
         }
@@ -555,6 +565,7 @@ pub enum DialogResult {
 #[derive(Debug, Clone)]
 pub struct PaletteResult {
     pub index: usize,
+    pub tag: u64,
     pub name: Arc<String>,
 }
 
@@ -614,13 +625,18 @@ pub trait PaletteBuilder<D> {
         where
             Self: Sized,
     {
-        Palette::<DialogResult, Self, D>::new().items(item!["Ok", "Cancel"])
+        let items = Vector::from(vec![
+            Item::new("Ok", "", Some("Enter".into()), 0),
+            Item::new("Cancel", "", Some("Esc".into()), 1),
+        ]);
+        Palette::<DialogResult, Self, D>::new().items(items)
     }
     fn alert(&self, title: &str) -> Palette<PaletteResult, Self, D>
         where
             Self: Sized,
     {
-        Palette::new().title(title).items(item!["Ok"])
+        let items = Vector::unit(Item::new("OK", "", Some("Enter".into()), 0));
+        Palette::new().title(title).items(items)
     }
 }
 

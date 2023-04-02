@@ -2,11 +2,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use druid::{BoxConstraints, Data, Lens, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Size, UpdateCtx, Widget, WidgetPod, WidgetId, Selector, Command};
 use druid::im::Vector;
-use crate::text_editor::editor_view::EditorKeyBindings;
+use crate::text_editor::editor_view::{EDITOR_PALETTE_CALLBACK, EditorKeyBindings};
 use crate::text_editor::palette_view::{CLOSE_PALETTE, DialogResult, Item, Palette, PALETTE_CALLBACK, PaletteBuilder, PaletteCommandType, PaletteResult, PaletteView, PaletteViewState, SHOW_DIALOG_FOR_EDITOR, SHOW_PALETTE_FOR_EDITOR, ShowPalette};
 use crate::text_editor::RESET_HELD_STATE;
 
 pub(crate) const SHOW_PALETTE: Selector = Selector::new("nonepad.palette.show_for_context");
+const PALETTE_RESULT: Selector<PaletteResult> = Selector::new("nonepad.palette.result");
 
 pub trait IsDirty {
     fn is_dirty(&self) -> bool;
@@ -14,6 +15,7 @@ pub trait IsDirty {
 }
 
 const FOCUS_PALETTE: Selector<()> = Selector::new("nonepad.palette.focus");
+pub(crate) const FOCUSED_EDITOR: Selector<WidgetId> = Selector::new("nonepad.palette.focused_editor");
 
 pub struct PaletteManager<State: druid::Data + IsDirty> {
     inner: Box<WidgetPod<State, Box<dyn Widget<State>>>>,
@@ -55,6 +57,8 @@ impl<State: druid::Data + IsDirty> PaletteManager<State> {
         (widget, widget_state)
     }
 }
+
+const EDITOR_OFFSET: u64 = 0x80000000;
 
 impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for PaletteManager<State> {
     fn event(&mut self, ctx: &mut EventCtx, event: &Event, data: &mut PaletteManagerState<State>, env: &Env) {
@@ -111,11 +115,66 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
 
             druid::Event::Command(cmd) if cmd.is(SHOW_PALETTE) => {
                 // show the command palette
-                println!("Show the palette")
-            }
+                if let Some(key_bindings) = &self.key_bindings {
+                    let mut items = Vector::new();
+                    let bindings = key_bindings.borrow();
+                    for (idx, c) in bindings.window_commands.iter().enumerate() {
+                        let hotkey = c.shortcut.clone().map(|s| s.to_string());
+                        items.push_back(Item::new(c.description.as_str(), "", hotkey, idx as u64))
+                    }
 
+                    for (idx, c) in bindings.editor_commands.iter().enumerate() {
+                        if let Some(desc) = &c.description {
+                            let hotkey = c.shortcut.clone().map(|s| s.to_string());
+                            items.push_back(Item::new(desc.as_str(), "", hotkey, EDITOR_OFFSET + idx as u64))
+                        }
+                    }
+
+                    if !items.is_empty() {
+                        self.palette()
+                            .items(items)
+                            .on_action(|result, ctx| {
+                                ctx.submit_command(PALETTE_RESULT.with(result).to(ctx.widget_id()));
+                            })
+                            .show(ctx);
+                    }
+                }
+
+                ctx.set_handled();
+                return;
+            }
+            druid::Event::Command(cmd) if cmd.is(PALETTE_RESULT) => {
+                let result = cmd.get_unchecked(PALETTE_RESULT);
+                if let Some(key_bindings) = &self.key_bindings {
+
+                    let bindings = key_bindings.borrow();
+                    if result.tag < EDITOR_OFFSET {
+                        // it is a window command
+                        if let Some(cmd) = bindings.window_commands.get(result.tag as usize) {
+                            ctx.submit_command(Command::from(cmd.selector));
+                        }
+                    } else {
+                        // it is an editor command
+                        if let Some(cmd) = bindings.editor_commands.get((result.tag - EDITOR_OFFSET) as usize) {
+                            if let Some(editor) = data.editor {
+                                // println!("Sending EDITOR_PALETTE_CALLBACK to {editor:?}");
+                                ctx.submit_command(EDITOR_PALETTE_CALLBACK.with(cmd.exec).to(editor));
+                            }
+                        }
+                    }
+                }
+            }
             druid::Event::Command(cmd) if cmd.is(FOCUS_PALETTE) => {
                 self.palette.widget_mut().take_focus(ctx);
+            }
+
+            druid::Event::Command(cmd) if cmd.is(FOCUSED_EDITOR) => {
+                let editor = cmd.get_unchecked(FOCUSED_EDITOR);
+                //println!("Focused editor: {editor:?}");
+
+                data.editor = Some(editor.clone());
+                ctx.set_handled();
+                return;
             }
 
             druid::Event::Command(cmd) if cmd.is(SHOW_DIALOG_FOR_EDITOR) => {
@@ -268,7 +327,7 @@ pub(super) const SHOW_PALETTE_FOR_WINDOW: Selector<(
     String,
     Option<Vector<Item>>,
     Option<Rc<dyn Fn(PaletteResult, &mut EventCtx)>>,
-)> = Selector::new("nonepad.dialog.show_for_window");
+)> = Selector::new("nonepad.palette.show_for_window");
 
 impl<'a, 'b, 'c> ShowPalette<DialogResult> for EventCtx<'b, 'c> {
     fn show_palette(

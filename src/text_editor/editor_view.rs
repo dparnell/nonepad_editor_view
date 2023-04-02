@@ -3,13 +3,15 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut, Range};
 use std::path::{Path};
 use std::rc::Rc;
-use std::sync::mpsc;
+use std::str::FromStr;
+use std::sync::{Arc, mpsc};
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use std::thread;
 use druid::kurbo::{BezPath, Line, PathEl};
 use druid::piet::{PietText, Text, TextAttribute, TextLayout, TextLayoutBuilder};
-use druid::{Affine, Application, BoxConstraints, ClipboardFormat, Color, Command, Data, Env, Event, EventCtx, ExtEventSink, FontStyle, HotKey, KeyEvent, LayoutCtx, LifeCycle, LifeCycleCtx, MouseButton, PaintCtx, Point, Rect, RenderContext, Selector, Size, SysMods, UpdateCtx, Widget, WidgetId};
+use druid::{Affine, Application, BoxConstraints, ClipboardFormat, Color, Command, Data, Env, Event, EventCtx, ExtEventSink, FontStyle, HotKey, KbKey, KeyEvent, LayoutCtx, LifeCycle, LifeCycleCtx, Modifiers, MouseButton, PaintCtx, Point, RawMods, Rect, RenderContext, Selector, Size, UpdateCtx, Widget, WidgetId};
+use druid::keyboard_types::{Key, UnrecognizedKeyError};
 use lazy_static::lazy_static;
 use ropey::Rope;
 use syntect::parsing::SyntaxReference;
@@ -17,7 +19,7 @@ use tracing::{debug, error, trace};
 use crate::text_buffer::{EditStack, position, rope_utils, SelectionLineRange};
 use crate::text_buffer::syntax::{StateCache, StyledLinesCache, SYNTAXSET};
 use crate::text_editor::{ChildWidget, EDITOR_LEFT_PADDING, env, FILE_REMOVED, FOCUS_EDITOR, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, RELOAD_FROM_DISK, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, WIDGET_ATTACHED};
-use crate::text_editor::palette_manager::SHOW_PALETTE;
+use crate::text_editor::palette_manager::{FOCUSED_EDITOR, SHOW_PALETTE};
 use crate::text_editor::palette_view::{DialogResult, PALETTE_CALLBACK, PaletteBuilder, PaletteCommandType};
 
 #[derive(Debug, Default)]
@@ -139,19 +141,32 @@ pub type EditorEventHandler = Box<dyn FnMut(&mut EventCtx, &Event, &mut EditStac
 
 pub type EditorCallback = fn(&mut EventCtx, &mut EditStack) -> ();
 
+pub const EDITOR_PALETTE_CALLBACK: Selector<EditorCallback> = Selector::new("nonepad.palette.editor_callback");
+
 pub struct EditorCommand {
-    pub description: Option<String>,
-    pub shortcut: Option<druid::HotKey>,
+    pub description: Option<Arc<String>>,
+    pub shortcut: Option<Arc<String>>,
+    pub hotkey: Option<druid::HotKey>,
     pub exec: EditorCallback,
 }
 
 impl EditorCommand {
-    pub fn new(description: Option<String>, shortcut: Option<druid::HotKey>, exec: EditorCallback) -> Self {
-        EditorCommand {
-            description,
-            shortcut,
+    pub fn new(description: Option<&str>, shortcut: Option<&str>, exec: EditorCallback) -> Result<Self, UnrecognizedKeyError> {
+        let hotkey = if let Some(shortcut) = shortcut {
+            Some(parse_hotkey(shortcut)?)
+        } else {
+            None
+        };
+
+        #[cfg(not(target_os = "macos"))]
+        let shortcut = shortcut.map(|s| s.replace("Cmd-", "Ctrl-"));
+
+        Ok(EditorCommand {
+            description: description.map(|s| Arc::new(s.into())),
+            shortcut: shortcut.map(|s| Arc::new(s.into())),
+            hotkey,
             exec
-        }
+        })
     }
 
     pub(crate) fn execute(&self, ctx: &mut EventCtx, editor: &mut EditStack) {
@@ -159,23 +174,89 @@ impl EditorCommand {
     }
 
     pub(crate) fn matches(&self, event: &KeyEvent) -> bool {
-        self.shortcut.clone().map(|s| s.matches(event)).unwrap_or(false)
+        self.hotkey.clone().map(|s| s.matches(event)).unwrap_or(false)
+    }
+}
+
+#[cfg(target_os = "macos")]
+const COMMAND_KEY: KbKey = KbKey::Meta;
+#[cfg(not(target_os = "macos"))]
+const COMMAND_KEY: KbKey = KbKey::Control;
+
+pub fn parse_hotkey(s: &str) -> Result<HotKey, UnrecognizedKeyError> {
+    let mut modifiers = Modifiers::empty();
+    let mut key = None;
+    for k in s.split("-") {
+        let k = if k.eq_ignore_ascii_case("Cmd") || k.eq("⌘") {
+            COMMAND_KEY
+        } else if k.eq_ignore_ascii_case("Ctrl") || k.eq_ignore_ascii_case("Control") {
+            Key::Control
+        } else {
+            KbKey::from_str(k)?
+        };
+
+        match k {
+            Key::Character(ch) => {
+                key = Some(Key::Character(ch))
+            },
+            Key::Shift => modifiers.set(Modifiers::SHIFT, true),
+            Key::Alt => modifiers.set(Modifiers::ALT, true),
+            Key::Control => modifiers.set(Modifiers::CONTROL, true),
+            Key::Meta => modifiers.set(Modifiers::META, true),
+            _ => key = Some(k.clone())
+        }
+    }
+
+    if let Some(key) = key {
+        let mods = match (modifiers.shift(), modifiers.alt(), modifiers.ctrl(), modifiers.meta()) {
+            (false, false, false, false) => None,
+            (true,  false, false, false) => Some(RawMods::Shift),
+            (false,  true, false, false) => Some(RawMods::Alt),
+            (true,   true, false, false) => Some(RawMods::AltShift),
+            (false, false, true,  false) => Some(RawMods::Ctrl),
+            (true,  false, true,  false) => Some(RawMods::CtrlShift),
+            (false, true,  true,  false) => Some(RawMods::AltCtrl),
+            (true,  true,  true,  false) => Some(RawMods::AltCtrlShift),
+            (false, false, false, true ) => Some(RawMods::Meta),
+            (true,  false, false, true ) => Some(RawMods::MetaShift),
+            (false, true,  false, true ) => Some(RawMods::AltMeta),
+            (true,  true,  false, true ) => Some(RawMods::AltMetaShift),
+            (false, false, true,  true ) => Some(RawMods::AltCtrlMeta),
+            (true,  false, true,  true ) => Some(RawMods::CtrlMetaShift),
+            (false, true,  true,  true ) => Some(RawMods::AltCtrlMeta),
+            (true,  true,  true,  true ) => Some(RawMods::AltCtrlMetaShift)
+        };
+
+        Ok(HotKey::new(mods, key))
+    } else {
+        Err(UnrecognizedKeyError)
     }
 }
 
 pub struct WindowCommand {
-    pub description: String,
-    pub shortcut: Option<druid::HotKey>,
+    pub description: Arc<String>,
+    pub shortcut: Option<Arc<String>>,
+    pub hotkey: Option<druid::HotKey>,
     pub selector: Selector
 }
 
 impl WindowCommand {
-    pub fn new_command(description: String, shortcut: Option::<druid::HotKey>, selector: Selector) -> Self {
-        WindowCommand {
-            description,
-            shortcut,
+    pub fn new_command(description: &str, shortcut: Option::<&str>, selector: Selector) -> Result<Self, UnrecognizedKeyError> {
+        let hotkey = if let Some(shortcut) = shortcut {
+            Some(parse_hotkey(shortcut)?)
+        } else {
+            None
+        };
+
+        #[cfg(not(target_os = "macos"))]
+        let shortcut = shortcut.map(|s| s.replace("Cmd-", "Ctrl-"));
+
+        Ok(WindowCommand {
+            description: Arc::new(description.into()),
+            shortcut: shortcut.map(|s| Arc::new(s.into())),
+            hotkey,
             selector
-        }
+        })
     }
 
     pub(crate) fn exec(&self, ctx: &mut EventCtx) {
@@ -183,7 +264,7 @@ impl WindowCommand {
     }
 
     pub(crate) fn matches(&self, event: &KeyEvent) -> bool {
-        self.shortcut.clone().map(|s| s.matches(event)).unwrap_or(false)
+        self.hotkey.clone().map(|s| s.matches(event)).unwrap_or(false)
     }
 }
 
@@ -197,23 +278,23 @@ impl EditorKeyBindings {
     pub fn cua() -> Self {
         let mut commands = Vec::new();
 
-        commands.push(EditorCommand::new(Some(String::from("Select all")), Some(HotKey::new(SysMods::Cmd, "a")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Select all"), Some("Cmd-a"), |ctx, editor| {
             editor.select_all();
             ctx.set_handled();
-        }));
+        }).unwrap());
 
-        commands.push(EditorCommand::new(Some(String::from("Cut")), Some(HotKey::new(SysMods::Cmd, "x")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Cut"), Some("Cmd-x"), |ctx, editor| {
             Application::global().clipboard().put_string(editor.selected_text());
             editor.delete();
             ctx.set_handled();
-        }));
+        }).unwrap());
 
-        commands.push(EditorCommand::new(Some(String::from("Copy")), Some(HotKey::new(SysMods::Cmd, "c")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Copy"), Some( "Cmd-c"), |ctx, editor| {
             Application::global().clipboard().put_string(editor.selected_text());
             ctx.set_handled();
-        }));
+        }).unwrap());
 
-        commands.push(EditorCommand::new(Some(String::from("Paste")), Some(HotKey::new(SysMods::Cmd, "v")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Paste"), Some("Cmd-v"), |ctx, editor| {
             let clipboard = Application::global().clipboard();
             let supported_types = &[ClipboardFormat::TEXT];
             let best_available_type = clipboard.preferred_format(supported_types);
@@ -223,22 +304,24 @@ impl EditorKeyBindings {
                 }
             }
             ctx.set_handled();
-        }));
+        }).unwrap());
 
-        commands.push(EditorCommand::new(Some(String::from("Undo")), Some(HotKey::new(SysMods::Cmd, "z")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Undo"), Some("Cmd-z"), |ctx, editor| {
             editor.undo();
             ctx.set_handled();
-        }));
+        }).unwrap());
 
-        commands.push(EditorCommand::new(Some(String::from("Redo")), Some(HotKey::new(SysMods::CmdShift, "Z")), |ctx, editor| {
+        commands.push(EditorCommand::new(Some("Redo"), Some("Cmd-Shift-Z"), |ctx, editor| {
             editor.redo();
             ctx.set_handled();
-        }));
+        }).unwrap());
 
-        commands.push(EditorCommand::new(Some(String::from("Redo")), Some(HotKey::new(SysMods::Cmd, "y")), |ctx, editor| {
+
+        #[cfg(not(target_os = "macos"))]
+        commands.push(EditorCommand::new(Some("Redo"), Some("Ctrl-y"), |ctx, editor| {
             editor.redo();
             ctx.set_handled();
-        }));
+        }).unwrap());
 
         EditorKeyBindings {
             event_handler: None,
@@ -248,7 +331,7 @@ impl EditorKeyBindings {
     }
 
     pub fn with_palette(mut self) -> Self {
-        self.window_commands.push(WindowCommand::new_command(String::from("Show Palette"), Some(HotKey::new(SysMods::CmdShift, "P")), SHOW_PALETTE));
+        self.window_commands.push(WindowCommand::new_command("Show Palette", Some("Cmd-Shift-P"), SHOW_PALETTE).unwrap());
 
         self
     }
@@ -442,6 +525,7 @@ impl Widget<EditStack> for EditorView {
             },
             LifeCycle::FocusChanged(flag) => {
                 trace!("Editor {:?} focus changed: {flag:?}", ctx.widget_id());
+                ctx.submit_command(FOCUSED_EDITOR.with(ctx.widget_id()));
                 ctx.request_paint();
             }
             _ => (),
@@ -781,6 +865,15 @@ impl EditorView {
                     return true;
                 }
                 false
+            }
+
+            Event::Command(cmd) if cmd.is(EDITOR_PALETTE_CALLBACK) => {
+                let exec = cmd.get_unchecked(EDITOR_PALETTE_CALLBACK);
+
+                exec(ctx, editor);
+                ctx.set_handled();
+
+                true
             }
 
             Event::Command(cmd) if cmd.is(druid::commands::SAVE_FILE_AS) => {
