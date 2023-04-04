@@ -1311,10 +1311,11 @@ impl EditorView {
             dy += self.metrics.font_height;
         }
 
-        // if path is unclosed, it can only be because the lastest visible line was a RangeFull
+        // if path is unclosed, it can only be because the last visible line was a RangeFull
         // We need to close it
         match current_path.last() {
             Some(PathEl::ClosePath) => (),
+            None => (),
             _ => {
                 current_path.push(PathEl::LineTo(Point::new(0.5, dy.ceil() + 0.5)));
                 current_path.push(PathEl::ClosePath);
