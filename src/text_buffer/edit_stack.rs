@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::buffer::Buffer;
 use super::file::TextFileInfo;
-use druid::Data;
+use druid::{Data, WidgetId};
 use lazy_static::lazy_static;
 
 #[derive(Debug, Clone, Default)]
@@ -16,6 +16,7 @@ pub struct EditStack {
     pub file: TextFileInfo,
     pub filename: Option<PathBuf>,
     dirty: bool,
+    pub widget_id: Option<WidgetId>
 }
 
 impl Data for EditStack {
@@ -62,6 +63,7 @@ impl EditStack {
             file: file.0,
             filename: Some(path.as_ref().to_path_buf()),
             dirty: false,
+            widget_id: None
         })
     }
 

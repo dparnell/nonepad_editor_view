@@ -187,6 +187,12 @@ impl Widget<PaletteViewState> for PaletteView {
                         match &data.visible_list {
                             Some(l) => {
                                 if let Some(item) = l.get(data.selected_idx) {
+                                    let target = match f {
+                                        PaletteCommandType::EditorPalette(widget, _) => widget,
+                                        PaletteCommandType::EditorDialog(widget, _) => widget,
+                                        _ => ctx.widget_id(),
+                                    };
+
                                     ctx.submit_command(
                                         PALETTE_CALLBACK.with(
                                             (
@@ -196,7 +202,7 @@ impl Widget<PaletteViewState> for PaletteView {
                                                     tag: item.1.tag
                                                 },
                                                 f,
-                                            )));
+                                            )).to(target));
                                 }
                             }
                             None => {
@@ -514,20 +520,20 @@ fn build(id: WidgetId) -> Flex<PaletteViewState> {
 
 #[derive(Clone)]
 pub(super) enum PaletteCommandType {
-    EditorPalette(Rc<dyn Fn(PaletteResult, &mut EventCtx, &mut EditorView, &mut EditStack)>),
-    EditorDialog(Rc<dyn Fn(DialogResult, &mut EventCtx, &mut EditorView, &mut EditStack)>),
+    EditorPalette(WidgetId, Rc<dyn Fn(PaletteResult, &mut EventCtx, &mut EditorView, &mut EditStack)>),
+    EditorDialog(WidgetId, Rc<dyn Fn(DialogResult, &mut EventCtx, &mut EditorView, &mut EditStack)>),
     WindowPalette(Rc<dyn Fn(PaletteResult, &mut EventCtx)>),
     WindowDialog(Rc<dyn Fn(DialogResult, &mut EventCtx)>),
 }
 
-pub(super) const SHOW_PALETTE_FOR_EDITOR: Selector<(
+pub const SHOW_PALETTE_FOR_EDITOR: Selector<(
     WidgetId,
     String,
     Option<Vector<Item>>,
     Option<Rc<dyn Fn(PaletteResult, &mut EventCtx, &mut EditorView, &mut EditStack)>>,
 )> = Selector::new("nonepad.palette.show_for_editor");
 
-pub(super) const SHOW_DIALOG_FOR_EDITOR: Selector<(
+pub const SHOW_DIALOG_FOR_EDITOR: Selector<(
     WidgetId,
     String,
     Option<Vector<Item>>,
@@ -591,10 +597,10 @@ pub struct PaletteResult {
 }
 
 pub struct Palette<R, W, D> {
-    pub(crate) title: Option<String>,
-    pub(crate) editor_action: Option<Rc<dyn Fn(R, &mut EventCtx, &mut W, &mut D)>>,
-    pub(crate) action: Option<Rc<dyn Fn(R, &mut EventCtx)>>,
-    pub(crate) items: Option<Vector<Item>>,
+    pub title: Option<String>,
+    pub editor_action: Option<Rc<dyn Fn(R, &mut EventCtx, &mut W, &mut D)>>,
+    pub action: Option<Rc<dyn Fn(R, &mut EventCtx)>>,
+    pub items: Option<Vector<Item>>,
 }
 
 impl<R, W, D> Default for Palette<R, W, D> {

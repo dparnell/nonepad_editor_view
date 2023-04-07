@@ -503,6 +503,10 @@ impl Widget<EditStack> for EditorView {
         if old_dx != self.delta_x || old_dy != self.delta_y {
             ctx.request_paint();
         }
+
+        if editor.widget_id.is_none() {
+            editor.widget_id = Some(ctx.widget_id());
+        }
     }
 
     fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle, editor: &EditStack, env: &Env) {
@@ -1005,11 +1009,11 @@ impl EditorView {
             Event::Command(cmd) if cmd.is(PALETTE_CALLBACK) => {
                 let item = cmd.get_unchecked(PALETTE_CALLBACK);
                 match &item.1 {
-                    PaletteCommandType::EditorPalette(action) => {
+                    PaletteCommandType::EditorPalette(_, action) => {
                         (action)(item.0.clone(), ctx, self, editor);
                         true
                     }
-                    PaletteCommandType::EditorDialog(action) => {
+                    PaletteCommandType::EditorDialog(_, action) => {
                         let dialog_result = if item.0.index == 0 {
                             DialogResult::Ok
                         } else {

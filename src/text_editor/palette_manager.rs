@@ -27,6 +27,7 @@ pub struct PaletteManager<State: druid::Data + IsDirty> {
 pub struct PaletteManagerState<State: druid::Data + IsDirty> {
     in_palette: bool,
     editor: Option<WidgetId>,
+    palette_for: Option<WidgetId>,
     inner_state: Box<State>,
     event_callback: Option<Rc<dyn Fn(&mut EventCtx, &Event, &mut State)>>,
     palette_state: PaletteViewState
@@ -49,6 +50,7 @@ impl<State: druid::Data + IsDirty> PaletteManager<State> {
         let widget_state = PaletteManagerState {
             in_palette: false,
             editor: None,
+            palette_for: None,
             inner_state: Box::new(state),
             event_callback,
             palette_state: PaletteViewState::default()
@@ -159,7 +161,7 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                         // it is an editor command
                         if let Some(cmd) = bindings.editor_commands.get((result.tag - EDITOR_OFFSET) as usize) {
                             if let Some(editor) = data.editor {
-                                // println!("Sending EDITOR_PALETTE_CALLBACK to {editor:?}");
+                                //println!("Sending EDITOR_PALETTE_CALLBACK to {editor:?}");
                                 ctx.submit_command(EDITOR_PALETTE_CALLBACK.with((cmd.tag, cmd.exec)).to(editor));
                             }
                         }
@@ -183,12 +185,12 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                 data.in_palette = true;
                 ctx.request_layout();
                 let (widget, title, list, action) = cmd.get_unchecked(SHOW_DIALOG_FOR_EDITOR).clone();
-                data.editor = Some(widget.clone());
+                data.palette_for = Some(widget.clone());
                 self.palette.widget_mut().init(
                     &mut data.palette_state,
                     title,
                     list.clone(),
-                    action.map(|f| PaletteCommandType::EditorDialog(f)),
+                    action.map(|f| PaletteCommandType::EditorDialog(widget, f)),
                 );
 
                 ctx.submit_command(Command::from(FOCUS_PALETTE));
@@ -199,12 +201,12 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                 data.in_palette = true;
                 ctx.request_layout();
                 let (widget, title, list, action) = cmd.get_unchecked(SHOW_PALETTE_FOR_EDITOR).clone();
-                data.editor = Some(widget.clone());
+                data.palette_for = Some(widget.clone());
                 self.palette.widget_mut().init(
                     &mut data.palette_state,
                     title,
                     list.clone(),
-                    action.map(|f| PaletteCommandType::EditorPalette(f)),
+                    action.map(|f| PaletteCommandType::EditorPalette(widget, f)),
                 );
 
                 ctx.submit_command(Command::from(FOCUS_PALETTE));
@@ -215,7 +217,7 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                 data.in_palette = true;
                 ctx.request_layout();
                 let (widget, title, list, action) = cmd.get_unchecked(SHOW_DIALOG_FOR_WINDOW).clone();
-                data.editor = Some(widget.clone());
+                data.palette_for = Some(widget.clone());
                 self.palette.widget_mut().init(
                     &mut data.palette_state,
                     title,
@@ -231,7 +233,7 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                 data.in_palette = true;
                 ctx.request_layout();
                 let (widget, title, list, action) = cmd.get_unchecked(SHOW_PALETTE_FOR_WINDOW).clone();
-                data.editor = Some(widget.clone());
+                data.palette_for = Some(widget.clone());
                 self.palette.widget_mut().init(
                     &mut data.palette_state,
                     title,
@@ -250,7 +252,7 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                     ctx.focus_prev();
                 }
                 data.in_palette = false;
-                data.editor = None;
+                data.palette_for = None;
                 ctx.request_paint();
                 return;
             },
