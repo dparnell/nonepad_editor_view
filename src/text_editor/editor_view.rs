@@ -284,7 +284,7 @@ impl EditorKeyBindings {
     pub fn cua() -> Self {
         let mut commands = Vec::new();
 
-        commands.push(EditorCommand::new(Some("Select all"), Some("Cmd-A"), 0, |ctx, _tag, editor| {
+        commands.push(EditorCommand::new(Some("Select All"), Some("Cmd-A"), 0, |ctx, _tag, editor| {
             editor.select_all();
             ctx.set_handled();
         }).unwrap());
