@@ -74,6 +74,11 @@ impl TextEditor {
     fn new(key_bindings: Rc<RefCell<EditorKeyBindings>>) -> Self {
         let id = WidgetId::next();
 
+        Self::new_with_id(id, key_bindings)
+    }
+
+    fn new_with_id(id: WidgetId, key_bindings: Rc<RefCell<EditorKeyBindings>>) -> Self {
+
         TextEditor {
             gutter_id: None,
             editor_id: None,
@@ -184,5 +189,10 @@ impl Widget<EditStack> for TextEditor {
 pub fn new(key_bindings: Rc<RefCell<EditorKeyBindings>>) -> impl Widget<EditStack> {
     let t = TextEditor::new(key_bindings);
     let id = t.id;
+    t.with_id(id)
+}
+
+pub fn new_with_id(id: WidgetId, key_bindings: Rc<RefCell<EditorKeyBindings>>) -> impl Widget<EditStack> {
+    let t = TextEditor::new_with_id(id, key_bindings);
     t.with_id(id)
 }

@@ -434,7 +434,7 @@ lazy_static! {
                 match rx.recv() {
                     Ok(message) => match message {
                         BackgroundWorkerMessage::Start(owner_id, editor_id, events, lines) => {
-                            trace!("added editor {:?} {:?}", owner_id, editor_id);
+                            trace!("added editor {:?} -> {:?}", editor_id, owner_id);
                             let mut state = State {
                                 editor_id,
                                 events,
@@ -512,11 +512,7 @@ impl Widget<EditStack> for EditorView {
     fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle, editor: &EditStack, env: &Env) {
         match event {
             LifeCycle::WidgetAdded => {
-                ctx.submit_command(
-                    WIDGET_ATTACHED
-                        .with(ChildWidget::Editor(ctx.widget_id()))
-                        .to(self.owner_id),
-                );
+                ctx.submit_command(WIDGET_ATTACHED.with(ChildWidget::Editor(ctx.widget_id())).to(self.owner_id));
 
                 let start = BackgroundWorkerMessage::Start(self.owner_id, ctx.widget_id(), ctx.get_external_handle(), self.highlighted_line.clone());
                 if let Ok(tx) = BACKGROUND_TX.lock() {
