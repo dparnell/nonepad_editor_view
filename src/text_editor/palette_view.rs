@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::cmp::Ordering::Equal;
+use std::fmt::{Debug, Formatter};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -9,6 +10,7 @@ use druid::widget::{Flex, Label, Padding, TextBox};
 use druid::{Affine, Color, Data, Env, Event, EventCtx, KbKey, KeyEvent, Lens, LifeCycle, Point, Rect, RenderContext, Selector, Size, Widget, WidgetExt, WidgetId, WidgetPod};
 
 use sublime_fuzzy::best_match;
+use tracing::trace;
 
 use crate::theme::THEME;
 
@@ -184,13 +186,15 @@ impl Widget<PaletteViewState> for PaletteView {
                     ctx.submit_command(CLOSE_PALETTE);
 
                     if let Some(f) = self.action.take() {
+                        trace!("palette closed with: {f:?}");
                         match &data.visible_list {
                             Some(l) => {
                                 if let Some(item) = l.get(data.selected_idx) {
                                     let target = match f {
                                         PaletteCommandType::EditorPalette(widget, _) => widget,
                                         PaletteCommandType::EditorDialog(widget, _) => widget,
-                                        _ => ctx.widget_id(),
+                                        PaletteCommandType::WindowPalette(widget, _) => widget,
+                                        PaletteCommandType::WindowDialog(widget, _) => widget
                                     };
 
                                     ctx.submit_command(
@@ -522,8 +526,19 @@ fn build(id: WidgetId) -> Flex<PaletteViewState> {
 pub(super) enum PaletteCommandType {
     EditorPalette(WidgetId, Rc<dyn Fn(PaletteResult, &mut EventCtx, &mut EditorView, &mut EditStack)>),
     EditorDialog(WidgetId, Rc<dyn Fn(DialogResult, &mut EventCtx, &mut EditorView, &mut EditStack)>),
-    WindowPalette(Rc<dyn Fn(PaletteResult, &mut EventCtx)>),
-    WindowDialog(Rc<dyn Fn(DialogResult, &mut EventCtx)>),
+    WindowPalette(WidgetId, Rc<dyn Fn(PaletteResult, &mut EventCtx)>),
+    WindowDialog(WidgetId, Rc<dyn Fn(DialogResult, &mut EventCtx)>),
+}
+
+impl Debug for PaletteCommandType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PaletteCommandType::EditorPalette(id, _) => { f.write_str(format!("PaletteCommandType::EditorPalette({:?}, _)", id).as_str()) }
+            PaletteCommandType::EditorDialog(id, _) => { f.write_str(format!("PaletteCommandType::EditorDialog({:?}, _)", id).as_str()) }
+            PaletteCommandType::WindowPalette(id, _) => { f.write_str(format!("PaletteCommandType::WindowPalette({:?}, _)", id).as_str()) }
+            PaletteCommandType::WindowDialog(id, _) => { f.write_str(format!("PaletteCommandType::WindowDialog({:?}, _)", id).as_str()) }
+        }
+    }
 }
 
 pub const SHOW_PALETTE_FOR_EDITOR: Selector<(

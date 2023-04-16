@@ -96,12 +96,12 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
             druid::Event::Command(cmd) if cmd.is(PALETTE_CALLBACK) => {
                 let item = cmd.get_unchecked(PALETTE_CALLBACK);
                 match &item.1 {
-                    PaletteCommandType::WindowPalette(action) => {
+                    PaletteCommandType::WindowPalette(_, action) => {
                         (action)(item.0.clone(), ctx);
                         ctx.set_handled();
                         return;
                     }
-                    PaletteCommandType::WindowDialog(action) => {
+                    PaletteCommandType::WindowDialog(_, action) => {
                         let dialog_result = if item.0.index == 0 {
                             DialogResult::Ok
                         } else {
@@ -222,7 +222,7 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                     &mut data.palette_state,
                     title,
                     list.clone(),
-                    action.map(|f| PaletteCommandType::WindowDialog(f)),
+                    action.map(|f| PaletteCommandType::WindowDialog(ctx.widget_id(), f)),
                 );
 
                 ctx.submit_command(Command::from(FOCUS_PALETTE));
@@ -238,7 +238,7 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                     &mut data.palette_state,
                     title,
                     list.clone(),
-                    action.map(|f| PaletteCommandType::WindowPalette(f)),
+                    action.map(|f| PaletteCommandType::WindowPalette(ctx.widget_id(), f)),
                 );
 
                 ctx.submit_command(Command::from(FOCUS_PALETTE));
@@ -268,6 +268,9 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
     }
 
     fn lifecycle(&mut self, ctx: &mut LifeCycleCtx, event: &LifeCycle, data: &PaletteManagerState<State>, env: &Env) {
+        if let LifeCycle::WidgetAdded = event {
+            ctx.register_child(self.inner.id());
+        }
         if event.should_propagate_to_hidden() {
             self.palette.lifecycle(ctx, event, &data.palette_state, env);
             self.inner.lifecycle(ctx, event, &data.inner_state, env);
