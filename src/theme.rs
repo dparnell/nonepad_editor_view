@@ -264,6 +264,25 @@ pub const GIT_DECORATION_SUBMODULE_RESOURCE_FOREGROUND: Key<Color> =
 impl Theme {
     pub fn to_env(&self, env: &mut Env) {
         env.set(
+            druid::theme::BACKGROUND_DARK,
+            Color::from_hex_str(&self.vscode.colors.tab_inactive_background).unwrap(),
+        );
+
+        env.set(
+            druid::theme::BACKGROUND_LIGHT,
+            Color::from_hex_str(&self.vscode.colors.tab_active_background).unwrap(),
+        );
+
+        env.set(
+            druid::theme::WINDOW_BACKGROUND_COLOR,
+            Color::from_hex_str(&self.vscode.colors.editor_background).unwrap(),
+        );
+        env.set(
+            druid::theme::BORDER_DARK,
+            Color::from_hex_str(&self.vscode.colors.panel_border).unwrap(),
+        );
+
+        env.set(
             FOCUS_BORDER,
             Color::from_hex_str(&self.vscode.colors.focus_border).unwrap(),
         );

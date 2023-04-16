@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use druid::widget::prelude::*;
-use druid::{AppLauncher, Color, Data, Lens, WidgetExt, WindowDesc};
+use druid::{AppLauncher, Data, Lens, WidgetExt, WindowDesc};
 use nonepad_editor_view::text_buffer::EditStack;
 use nonepad_editor_view::text_buffer::syntax::SYNTAXSET;
 use nonepad_editor_view::text_editor;
@@ -68,18 +68,7 @@ pub fn main() {
     AppLauncher::with_window(main_window)
         .configure_env(|env, _| {
             // load the default editor theme
-            let theme = Theme::default();
-
-            env.set(
-                druid::theme::WINDOW_BACKGROUND_COLOR,
-                Color::from_hex_str(&theme.vscode.colors.editor_background).unwrap(),
-            );
-            env.set(
-                druid::theme::BORDER_DARK,
-                Color::from_hex_str(&theme.vscode.colors.panel_border).unwrap(),
-            );
-
-            theme.to_env(env);
+            Theme::default().to_env(env);
         })
         .launch(state)
         .expect("Failed to launch application");
