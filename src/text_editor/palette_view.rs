@@ -53,7 +53,7 @@ impl Item {
             description: Arc::new(description.into()),
             filtered: false,
             score: 0,
-            hotkey: hotkey.map(|k| Arc::new(k)),
+            hotkey: hotkey.map(Arc::new),
             tag
         }
     }
@@ -75,7 +75,7 @@ pub struct PaletteViewState {
 impl PaletteViewState {
     fn apply_filter(&mut self) {
         if let Some(l) = &mut self.list {
-            if self.filter.len() == 0 {
+            if self.filter.is_empty() {
                 for s in l.iter_mut() {
                     s.filtered = false;
                     s.score = 0;
@@ -146,7 +146,7 @@ impl PaletteView {
         action: Option<PaletteCommandType>,
     ) {
         data.list = list.clone();
-        data.title = title.to_owned();
+        data.title = title;
         data.selected_idx = 0;
         data.filter.clear();
         self.action = action;
@@ -500,7 +500,7 @@ fn build(id: WidgetId) -> Flex<PaletteViewState> {
                         2.,
                         Flex::column()
                             .with_child(
-                                Label::new(|data: &PaletteViewState, _env: &Env| format!("{}", data.title))
+                                Label::new(|data: &PaletteViewState, _env: &Env| data.title.to_string())
                                     .with_text_size(12.0),
                             )
                             .with_child(

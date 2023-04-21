@@ -116,18 +116,18 @@ impl Widget<EditStack> for TextEditor {
                 let child = cmd.get_unchecked(WIDGET_ATTACHED);
 
                 match child {
-                    ChildWidget::Editor(id) => self.editor_id = Some(id.clone()),
-                    ChildWidget::Gutter(id) => self.gutter_id = Some(id.clone()),
-                    ChildWidget::VScroll(id) => self.vscroll_id = Some(id.clone()),
-                    ChildWidget::HScroll(id) => self.hscroll_id = Some(id.clone())
+                    ChildWidget::Editor(id) => self.editor_id = Some(*id),
+                    ChildWidget::Gutter(id) => self.gutter_id = Some(*id),
+                    ChildWidget::VScroll(id) => self.vscroll_id = Some(*id),
+                    ChildWidget::HScroll(id) => self.hscroll_id = Some(*id)
                 }
             }
 
             Event::Command(cmd) if cmd.is(SCROLL_TO) => {
                 // clamp to size
                 let d = *cmd.get_unchecked(SCROLL_TO);
-                let x = d.0.map(|x| x.clamp(-self.text_width(&data), 0.0));
-                let y = d.1.map(|y| y.clamp(-self.text_height(&data), 0.0));
+                let x = d.0.map(|x| x.clamp(-self.text_width(data), 0.0));
+                let y = d.1.map(|y| y.clamp(-self.text_height(data), 0.0));
                 //dbg!(x,y);
                 if let Some(id) = self.editor_id {
                     ctx.submit_command(SCROLL_TO.with((x, y)).to(id));

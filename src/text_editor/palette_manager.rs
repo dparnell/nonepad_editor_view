@@ -176,7 +176,7 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                 let editor = cmd.get_unchecked(FOCUSED_EDITOR);
                 //println!("Focused editor: {editor:?}");
 
-                data.editor = Some(editor.clone());
+                data.editor = Some(*editor);
                 ctx.set_handled();
                 return;
             }
@@ -185,11 +185,11 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                 data.in_palette = true;
                 ctx.request_layout();
                 let (widget, title, list, action) = cmd.get_unchecked(SHOW_DIALOG_FOR_EDITOR).clone();
-                data.palette_for = Some(widget.clone());
+                data.palette_for = Some(widget);
                 self.palette.widget_mut().init(
                     &mut data.palette_state,
                     title,
-                    list.clone(),
+                    list,
                     action.map(|f| PaletteCommandType::EditorDialog(widget, f)),
                 );
 
@@ -201,11 +201,11 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                 data.in_palette = true;
                 ctx.request_layout();
                 let (widget, title, list, action) = cmd.get_unchecked(SHOW_PALETTE_FOR_EDITOR).clone();
-                data.palette_for = Some(widget.clone());
+                data.palette_for = Some(widget);
                 self.palette.widget_mut().init(
                     &mut data.palette_state,
                     title,
-                    list.clone(),
+                    list,
                     action.map(|f| PaletteCommandType::EditorPalette(widget, f)),
                 );
 
@@ -217,11 +217,11 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                 data.in_palette = true;
                 ctx.request_layout();
                 let (widget, title, list, action) = cmd.get_unchecked(SHOW_DIALOG_FOR_WINDOW).clone();
-                data.palette_for = Some(widget.clone());
+                data.palette_for = Some(widget);
                 self.palette.widget_mut().init(
                     &mut data.palette_state,
                     title,
-                    list.clone(),
+                    list,
                     action.map(|f| PaletteCommandType::WindowDialog(ctx.widget_id(), f)),
                 );
 
@@ -233,11 +233,11 @@ impl<State: druid::Data + IsDirty> Widget<PaletteManagerState<State>> for Palett
                 data.in_palette = true;
                 ctx.request_layout();
                 let (widget, title, list, action) = cmd.get_unchecked(SHOW_PALETTE_FOR_WINDOW).clone();
-                data.palette_for = Some(widget.clone());
+                data.palette_for = Some(widget);
                 self.palette.widget_mut().init(
                     &mut data.palette_state,
                     title,
-                    list.clone(),
+                    list,
                     action.map(|f| PaletteCommandType::WindowPalette(ctx.widget_id(), f)),
                 );
 

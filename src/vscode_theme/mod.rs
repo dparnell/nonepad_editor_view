@@ -361,7 +361,7 @@ pub struct VSCodeTheme {
 impl Default for VSCodeTheme {
     fn default() -> Self {
         let s = include_str!("themes/mariana.json");
-        serde_json::from_str(&s).unwrap()
+        serde_json::from_str(s).unwrap()
     }
 }
 

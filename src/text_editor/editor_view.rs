@@ -137,7 +137,7 @@ pub enum BackgroundWorkerMessage {
     Focus(WidgetId)
 }
 
-pub type EditorEventHandler = Box<dyn FnMut(&mut EventCtx, &Event, &mut EditStack) -> ()>;
+pub type EditorEventHandler = Box<dyn FnMut(&mut EventCtx, &Event, &mut EditStack)>;
 
 pub type EditorCallback = fn(&mut EventCtx, u64, &mut EditStack) -> ();
 
@@ -164,7 +164,7 @@ impl EditorCommand {
 
         Ok(EditorCommand {
             description: description.map(|s| Arc::new(s.into())),
-            shortcut: shortcut.map(|s| Arc::new(s.into())),
+            shortcut: shortcut.map(Arc::new),
             hotkey,
             tag,
             exec
@@ -188,7 +188,7 @@ const COMMAND_KEY: KbKey = KbKey::Control;
 pub fn parse_hotkey(s: &str) -> Result<HotKey, UnrecognizedKeyError> {
     let mut modifiers = Modifiers::empty();
     let mut key = None;
-    for k in s.split("-") {
+    for k in s.split('-') {
         let k = if k.eq_ignore_ascii_case("Cmd") || k.eq("⌘") {
             COMMAND_KEY
         } else if k.eq_ignore_ascii_case("Ctrl") || k.eq_ignore_ascii_case("Control") {
@@ -259,7 +259,7 @@ impl WindowCommand {
 
         Ok(WindowCommand {
             description: Arc::new(description.into()),
-            shortcut: shortcut.map(|s| Arc::new(s.into())),
+            shortcut: shortcut.map(Arc::new),
             hotkey,
             selector
         })
@@ -406,7 +406,7 @@ impl<'a> State <'a> {
         if self.current_index < self.rope.len_lines() {
             self.highlight_cache.update_range(
                 self.highlighted_line.clone(),
-                &self.syntax,
+                self.syntax,
                 &self.rope,
                 self.current_index,
                 self.current_index + self.chunk_len,
@@ -584,7 +584,9 @@ impl EditorView {
 
     pub fn new(owner_id: WidgetId, key_bindings: Rc<RefCell<EditorKeyBindings>>) -> Self {
 
-        let e = EditorView {
+        
+
+        EditorView {
             bg_color: Color::BLACK,
             fg_color: Color::WHITE,
             fg_sel_color: Color::BLACK,
@@ -602,9 +604,7 @@ impl EditorView {
             held_state: HeldState::None,
             highlighted_line: StyledLinesCache::new(),
             key_bindings,
-        };
-
-        e
+        }
     }
 
     fn update_highlighter(&self, data: &EditStack, line: usize) {
@@ -978,15 +978,13 @@ impl EditorView {
                             }
                         })
                         .show(ctx);
-                } else {
-                    if let Err(e) = editor.reload() {
-                        self.alert(&format!(
-                            "Error while reloading {}: {}",
-                            editor.filename.clone().unwrap_or_default().to_string_lossy(),
-                            e
-                        ))
-                            .show(ctx);
-                    }
+                } else if let Err(e) = editor.reload() {
+                    self.alert(&format!(
+                        "Error while reloading {}: {}",
+                        editor.filename.clone().unwrap_or_default().to_string_lossy(),
+                        e
+                    ))
+                        .show(ctx);
                 }
                 true
             }
@@ -1325,9 +1323,9 @@ impl EditorView {
 
         for path in selection_path {
             let path = BezPath::from_vec(path.elem);
-            let brush = ctx.render_ctx.solid_brush(self.fg_sel_color.clone());
+            let brush = ctx.render_ctx.solid_brush(self.fg_sel_color);
             ctx.render_ctx.fill(&path, &brush);
-            let brush = ctx.render_ctx.solid_brush(self.bg_sel_color.clone());
+            let brush = ctx.render_ctx.solid_brush(self.bg_sel_color);
             ctx.render_ctx.stroke(&path, &brush, 1.);
         }
 
@@ -1340,7 +1338,7 @@ impl EditorView {
                 .new_text_layout(line.clone())
                 .default_attribute(TextAttribute::Weight(FONT_WEIGTH))
                 .font(font.clone(), self.metrics.font_size)
-                .text_color(self.fg_color.clone());
+                .text_color(self.fg_color);
             if line_idx < editor.len_lines() {
                 if let Some(highlight) = self.highlighted_line.lines.lock().unwrap().get(line_idx) {
                     for h in highlight.iter() {
