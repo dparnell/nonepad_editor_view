@@ -523,7 +523,7 @@ fn build(id: WidgetId) -> Flex<PaletteViewState> {
 }
 
 #[derive(Clone)]
-pub(super) enum PaletteCommandType {
+pub enum PaletteCommandType {
     EditorPalette(WidgetId, Rc<dyn Fn(PaletteResult, &mut EventCtx, &mut EditorView, &mut EditStack)>),
     EditorDialog(WidgetId, Rc<dyn Fn(DialogResult, &mut EventCtx, &mut EditorView, &mut EditStack)>),
     WindowPalette(WidgetId, Rc<dyn Fn(PaletteResult, &mut EventCtx)>),
@@ -555,11 +555,11 @@ pub const SHOW_DIALOG_FOR_EDITOR: Selector<(
     Option<Rc<dyn Fn(DialogResult, &mut EventCtx, &mut EditorView, &mut EditStack)>>,
 )> = Selector::new("nonepad.dialog.show_for_editor");
 
-pub(super) const PALETTE_CALLBACK: Selector<(PaletteResult, PaletteCommandType)> =
+pub const PALETTE_CALLBACK: Selector<(PaletteResult, PaletteCommandType)> =
     Selector::new("nonepad.editor.execute_command");
-pub(super) const CLOSE_PALETTE: Selector<()> = Selector::new("nonepad.palette.close");
+pub const CLOSE_PALETTE: Selector<()> = Selector::new("nonepad.palette.close");
 
-pub(crate) trait ShowEditorPalette<R, W, D> {
+pub trait ShowEditorPalette<R, W, D> {
     fn show_editor_palette(
         &mut self,
         title: String,
@@ -568,13 +568,17 @@ pub(crate) trait ShowEditorPalette<R, W, D> {
     );
 }
 
-pub(crate) trait ShowPalette<R> {
+pub trait ShowPalette<R> {
     fn show_palette(
         &mut self,
         title: String,
         items: Option<Vector<Item>>,
         callback: Option<Rc<dyn Fn(R, &mut EventCtx)>>,
     );
+}
+
+pub trait ShowAlert {
+    fn alert(&mut self, title: String);
 }
 
 impl<'a, 'b, 'c> ShowEditorPalette<PaletteResult, EditorView, EditStack> for EventCtx<'b, 'c> {

@@ -3,7 +3,7 @@ use std::rc::Rc;
 use druid::{BoxConstraints, Data, Lens, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Size, UpdateCtx, Widget, WidgetPod, WidgetId, Selector, Command};
 use druid::im::Vector;
 use crate::text_editor::editor_view::{EDITOR_PALETTE_CALLBACK, EditorKeyBindings};
-use crate::text_editor::palette_view::{CLOSE_PALETTE, DialogResult, Item, Palette, PALETTE_CALLBACK, PaletteBuilder, PaletteCommandType, PaletteResult, PaletteView, PaletteViewState, SHOW_DIALOG_FOR_EDITOR, SHOW_PALETTE_FOR_EDITOR, ShowPalette};
+use crate::text_editor::palette_view::{CLOSE_PALETTE, DialogResult, Item, Palette, PALETTE_CALLBACK, PaletteBuilder, PaletteCommandType, PaletteResult, PaletteView, PaletteViewState, SHOW_DIALOG_FOR_EDITOR, SHOW_PALETTE_FOR_EDITOR, ShowAlert, ShowPalette};
 use crate::text_editor::RESET_HELD_STATE;
 
 pub(crate) const SHOW_PALETTE: Selector = Selector::new("nonepad.palette.show_for_context");
@@ -355,5 +355,16 @@ impl<'a, 'b, 'c> ShowPalette<PaletteResult> for EventCtx<'b, 'c> {
         callback: Option<Rc<dyn Fn(PaletteResult, &mut EventCtx)>>,
     ) {
         self.submit_command(SHOW_PALETTE_FOR_WINDOW.with((self.widget_id(), title, items, callback)));
+    }
+}
+
+impl<'a, 'b, 'c> ShowAlert for EventCtx<'b, 'c> {
+    fn alert(
+        &mut self,
+        title: String,
+    ) {
+        let items = Vector::unit(Item::new("OK", "", Some("Enter".into()), 0));
+
+        self.submit_command(SHOW_PALETTE_FOR_WINDOW.with((self.widget_id(), title, Some(items), None)));
     }
 }
