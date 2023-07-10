@@ -19,8 +19,19 @@ use tracing::{debug, error, trace};
 use crate::text_buffer::{EditStack, position, rope_utils, SelectionLineRange};
 use crate::text_buffer::syntax::{StateCache, StyledLinesCache, SYNTAXSET};
 use crate::text_editor::{ChildWidget, EDITOR_LEFT_PADDING, env, FILE_REMOVED, FOCUS_EDITOR, FONT_NAME, FONT_SIZE, FONT_WEIGTH, HIGHLIGHT, RELOAD_FROM_DISK, REQUEST_NEXT_SEARCH, RESET_HELD_STATE, SCROLL_TO, SELECT_LINE, WIDGET_ATTACHED};
-use crate::text_editor::palette_manager::{FOCUSED_EDITOR, SHOW_PALETTE};
+use crate::text_editor::palette_manager::{FOCUSED_EDITOR, SHOW_PALETTE, UNFOCUSED_EDITOR};
 use crate::text_editor::palette_view::{DialogResult, PALETTE_CALLBACK, PaletteBuilder, PaletteCommandType};
+
+pub const EDITOR_MASK: u64          = 0xff00000000000000;
+pub const EDITOR_PRESENT_MASK: u64  = 0x0100000000000000;
+pub const EDITOR_DIRTY_MASK: u64    = 0x0200000000000000;
+pub const EDITOR_CAN_UNDO: u64      = 0x0400000000000000;
+pub const EDITOR_CAN_REDO: u64      = 0x0800000000000000;
+pub const EDITOR_HAS_SELECTION: u64 = 0x1000000000000000;
+
+/// calculate the editor mask and send the response back to the given widget
+pub const EDITOR_GET_MASK: Selector<WidgetId> = Selector::new("nonepad.editor.get_mask");
+pub const EDITOR_MASK_REPLY: Selector<u64> = Selector::new("nonepad.editor.mask_reply");
 
 #[derive(Debug, Default)]
 struct SelectionPath {
@@ -144,6 +155,7 @@ pub type EditorCallback = fn(&mut EventCtx, u64, &mut EditStack) -> ();
 pub const EDITOR_PALETTE_CALLBACK: Selector<(u64, EditorCallback)> = Selector::new("nonepad.palette.editor_callback");
 
 pub struct EditorCommand {
+    pub mask: u64,
     pub description: Option<Arc<String>>,
     pub shortcut: Option<Arc<String>>,
     pub hotkey: Option<druid::HotKey>,
@@ -163,12 +175,18 @@ impl EditorCommand {
         let shortcut = shortcut.map(|s| s.replace("Cmd-", "Ctrl-"));
 
         Ok(EditorCommand {
+            mask: EDITOR_PRESENT_MASK,
             description: description.map(|s| Arc::new(s.into())),
             shortcut: shortcut.map(Arc::new),
             hotkey,
             tag,
             exec
         })
+    }
+
+    pub fn mask(mut self, mask: u64) -> Self {
+        self.mask = mask;
+        self
     }
 
     pub(crate) fn execute(&self, ctx: &mut EventCtx, editor: &mut EditStack) {
@@ -240,6 +258,7 @@ pub fn parse_hotkey(s: &str) -> Result<HotKey, UnrecognizedKeyError> {
 }
 
 pub struct WindowCommand {
+    pub mask: u64,
     pub description: Arc<String>,
     pub shortcut: Option<Arc<String>>,
     pub hotkey: Option<druid::HotKey>,
@@ -258,6 +277,7 @@ impl WindowCommand {
         let shortcut = shortcut.map(|s| s.replace("Cmd-", "Ctrl-"));
 
         Ok(WindowCommand {
+            mask: u64::MAX,
             description: Arc::new(description.into()),
             shortcut: shortcut.map(Arc::new),
             hotkey,
@@ -293,12 +313,12 @@ impl EditorKeyBindings {
             Application::global().clipboard().put_string(editor.selected_text());
             editor.delete();
             ctx.set_handled();
-        }).unwrap());
+        }).unwrap().mask(EDITOR_HAS_SELECTION));
 
         commands.push(EditorCommand::new(Some("Copy"), Some( "Cmd-C"), 0,|ctx, _tag, editor| {
             Application::global().clipboard().put_string(editor.selected_text());
             ctx.set_handled();
-        }).unwrap());
+        }).unwrap().mask(EDITOR_HAS_SELECTION));
 
         commands.push(EditorCommand::new(Some("Paste"), Some("Cmd-V"), 0,|ctx, _tag, editor| {
             let clipboard = Application::global().clipboard();
@@ -315,19 +335,19 @@ impl EditorKeyBindings {
         commands.push(EditorCommand::new(Some("Undo"), Some("Cmd-Z"), 0,|ctx, _tag, editor| {
             editor.undo();
             ctx.set_handled();
-        }).unwrap());
+        }).unwrap().mask(EDITOR_CAN_UNDO));
 
         commands.push(EditorCommand::new(Some("Redo"), Some("Cmd-Shift-Z"), 0,|ctx, _tag, editor| {
             editor.redo();
             ctx.set_handled();
-        }).unwrap());
+        }).unwrap().mask(EDITOR_CAN_REDO));
 
 
         #[cfg(not(target_os = "macos"))]
         commands.push(EditorCommand::new(Some("Redo"), Some("Ctrl-Y"), 0, |ctx, _tag, editor| {
             editor.redo();
             ctx.set_handled();
-        }).unwrap());
+        }).unwrap().mask(EDITOR_CAN_REDO));
 
         EditorKeyBindings {
             event_handler: None,
@@ -483,8 +503,6 @@ lazy_static! {
     };
 }
 
-
-
 impl Widget<EditStack> for EditorView {
     fn event(&mut self, ctx: &mut EventCtx, event: &Event, editor: &mut EditStack, _env: &Env) {
         let old_dx = self.delta_x;
@@ -531,7 +549,12 @@ impl Widget<EditStack> for EditorView {
             },
             LifeCycle::FocusChanged(flag) => {
                 trace!("Editor {:?} focus changed: {flag:?}", ctx.widget_id());
-                ctx.submit_command(FOCUSED_EDITOR.with(ctx.widget_id()));
+                if *flag {
+                    ctx.submit_command(FOCUSED_EDITOR.with(ctx.widget_id()));
+                } else {
+                    ctx.submit_command(UNFOCUSED_EDITOR.with(ctx.widget_id()));
+
+                }
                 ctx.request_paint();
             }
             _ => (),
@@ -871,6 +894,37 @@ impl EditorView {
                     return true;
                 }
                 false
+            }
+
+            Event::Command(cmd) if cmd.is(EDITOR_GET_MASK) => {
+                let reply_to = cmd.get_unchecked(EDITOR_GET_MASK);
+
+                let value = EDITOR_PRESENT_MASK;
+                let value = value | if editor.is_dirty() {
+                    EDITOR_DIRTY_MASK
+                } else  {
+                    0
+                };
+                let value = value | if editor.can_undo() {
+                    EDITOR_CAN_UNDO
+                } else {
+                    0
+                };
+                let value = value | if editor.can_redo() {
+                    EDITOR_CAN_REDO
+                } else {
+                    0
+                };
+                let value = value | if editor.has_selection() {
+                    EDITOR_HAS_SELECTION
+                } else {
+                    0
+                };
+
+                ctx.submit_command(EDITOR_MASK_REPLY.with(value).to(*reply_to));
+
+                ctx.set_handled();
+                true
             }
 
             Event::Command(cmd) if cmd.is(EDITOR_PALETTE_CALLBACK) => {

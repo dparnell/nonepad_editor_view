@@ -93,6 +93,11 @@ impl EditStack {
         self.dirty = false;
     }
 
+    pub fn reset_undo_redo(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
     pub fn set_dirty(&mut self) {
         self.dirty = true;
     }
@@ -106,6 +111,10 @@ impl EditStack {
         Ok(())
     }
 
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
     pub fn undo(&mut self) {
         if let Some(buffer) = self.undo_stack.pop() {
             let b = std::mem::take(&mut self.buffer);
@@ -115,6 +124,10 @@ impl EditStack {
         if self.undo_stack.is_empty() {
             self.dirty = false;
         }
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
     }
 
     pub fn redo(&mut self) {

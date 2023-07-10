@@ -517,6 +517,10 @@ impl Buffer {
         }
     }
 
+    pub fn has_selection(&self) -> bool {
+        self.carets.iter().any(|c| !c.selection_is_empty())
+    }
+
     pub fn selected_text(&self, line_feed: LineFeed) -> String {
         let mut s = String::new();
         let multi = self.carets.len() > 1;
