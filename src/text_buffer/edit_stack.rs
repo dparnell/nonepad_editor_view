@@ -7,6 +7,7 @@ use super::buffer::Buffer;
 use super::file::TextFileInfo;
 use druid::{Data, WidgetId};
 use lazy_static::lazy_static;
+use crate::text_editor::editor_view::{EDITOR_CAN_REDO, EDITOR_CAN_UNDO, EDITOR_DIRTY_MASK, EDITOR_HAS_SELECTION, EDITOR_PRESENT_MASK};
 
 #[derive(Debug, Clone, Default)]
 pub struct EditStack {
@@ -43,6 +44,32 @@ lazy_static! {
 impl EditStack {
     pub fn new() -> Self {
         Default::default()
+    }
+
+    pub fn get_event_mask(&self) -> u64 {
+        let value = EDITOR_PRESENT_MASK;
+        let value = value | if self.is_dirty() {
+            EDITOR_DIRTY_MASK
+        } else  {
+            0
+        };
+        let value = value | if self.can_undo() {
+            EDITOR_CAN_UNDO
+        } else {
+            0
+        };
+        let value = value | if self.can_redo() {
+            EDITOR_CAN_REDO
+        } else {
+            0
+        };
+        let value = value | if self.has_selection() {
+            EDITOR_HAS_SELECTION
+        } else {
+            0
+        };
+
+        value
     }
 
     pub fn selected_text(&self) -> String {

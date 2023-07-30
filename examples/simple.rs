@@ -9,7 +9,7 @@ use nonepad_editor_view::text_buffer::EditStack;
 use nonepad_editor_view::text_buffer::syntax::SYNTAXSET;
 use nonepad_editor_view::text_editor;
 use nonepad_editor_view::text_editor::editor_view::{EditorCommand, EditorKeyBindings};
-use nonepad_editor_view::text_editor::palette_manager::{IsDirty, PaletteManager};
+use nonepad_editor_view::text_editor::palette_manager::{PaletteAppState, PaletteManager};
 use nonepad_editor_view::theme::Theme;
 
 #[derive(Clone, Data, Lens)]
@@ -17,13 +17,17 @@ struct SimpleState {
     edit_stack: EditStack,
 }
 
-impl IsDirty for SimpleState {
+impl PaletteAppState for SimpleState {
     fn is_dirty(&self) -> bool {
         self.edit_stack.is_dirty()
     }
 
     fn reset_dirty(&mut self) {
         self.edit_stack.reset_dirty()
+    }
+
+    fn get_state_mask(&self) -> u64 {
+        u64::MAX
     }
 }
 

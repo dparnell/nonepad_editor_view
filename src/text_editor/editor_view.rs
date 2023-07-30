@@ -285,6 +285,11 @@ impl WindowCommand {
         })
     }
 
+    pub fn mask(mut self, mask: u64) -> Self {
+        self.mask = mask;
+        self
+    }
+    
     pub(crate) fn exec(&self, ctx: &mut EventCtx) {
         ctx.submit_command(Command::from(self.selector));
     }
@@ -370,12 +375,17 @@ impl EditorKeyBindings {
         if !ctx.is_handled() {
             match event {
                 Event::KeyDown(event) => {
+                    let mask = editor.get_event_mask();
                     for cmd in &self.editor_commands {
                         if cmd.matches(event) {
-                            cmd.execute(ctx, editor);
-                            if ctx.is_handled() {
-                                break;
+                            if cmd.mask & mask != 0 {
+                                cmd.execute(ctx, editor);
                             }
+                            ctx.set_handled();
+                        }
+
+                        if ctx.is_handled() {
+                            break;
                         }
                     }
                 }
@@ -899,27 +909,7 @@ impl EditorView {
             Event::Command(cmd) if cmd.is(EDITOR_GET_MASK) => {
                 let reply_to = cmd.get_unchecked(EDITOR_GET_MASK);
 
-                let value = EDITOR_PRESENT_MASK;
-                let value = value | if editor.is_dirty() {
-                    EDITOR_DIRTY_MASK
-                } else  {
-                    0
-                };
-                let value = value | if editor.can_undo() {
-                    EDITOR_CAN_UNDO
-                } else {
-                    0
-                };
-                let value = value | if editor.can_redo() {
-                    EDITOR_CAN_REDO
-                } else {
-                    0
-                };
-                let value = value | if editor.has_selection() {
-                    EDITOR_HAS_SELECTION
-                } else {
-                    0
-                };
+                let value = editor.get_event_mask();
 
                 ctx.submit_command(EDITOR_MASK_REPLY.with(value).to(*reply_to));
 
