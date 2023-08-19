@@ -47,7 +47,12 @@ impl ScrollBar {
     }
 
     fn handle_len(&self, data: &EditStack) -> f64 {
-        (self.len.powi(2) / (self.text_len(data) + self.len)).max(self.metrics.font_height)
+        let div = self.text_len(data) + self.len;
+        if div > 0.0 {
+            (self.len.powi(2) / div).max(self.metrics.font_height)
+        } else {
+            self.metrics.font_height
+        }
     }
 
     fn effective_len(&self, data: &EditStack) -> f64 {
@@ -141,12 +146,17 @@ impl Widget<EditStack> for ScrollBar {
                     self.is_hovered = false;
                 }
                 if self.is_held && ctx.is_active() && m.buttons.contains(MouseButton::Left) {
+                    let mut div = self.effective_len(data);
+                    if div == 0.0 {
+                        div = 1.0;
+                    }
+
                     if self.is_vertical() {
                         ctx.submit_command(
                             SCROLL_TO
                                 .with((
                                     None,
-                                    Some((self.mouse_delta - m.pos.y) * self.text_len(data) / self.effective_len(data)),
+                                    Some((self.mouse_delta - m.pos.y) * self.text_len(data) / div),
                                 ))
                                 .to(self.owner_id),
                         );
@@ -154,7 +164,7 @@ impl Widget<EditStack> for ScrollBar {
                         ctx.submit_command(
                             SCROLL_TO
                                 .with((
-                                    Some((self.mouse_delta - m.pos.x) * self.text_len(data) / self.effective_len(data)),
+                                    Some((self.mouse_delta - m.pos.x) * self.text_len(data) / div),
                                     None,
                                 ))
                                 .to(self.owner_id),
